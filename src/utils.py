@@ -21,6 +21,38 @@ MAX_RETRIES = 2
 RETRY_BASE_DELAY = 5.0  # seconds
 
 BASE_URL = "https://www.google.com"
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+
+
+async def geocode_location(location: str) -> tuple[float, float] | None:
+    """Geocode a text location to (lat, lng) using Nominatim (free, no API key).
+
+    Google Maps only serves real search results when the URL includes map
+    coordinates (/@lat,lng,zoom); with just a text query it returns the Maps
+    home page. Nominatim is rate-limited to 1 req/sec per their policy —
+    plenty for our per-location geocoding since the results are cached.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(
+                NOMINATIM_URL,
+                params={"q": location, "format": "json", "limit": 1},
+                headers={
+                    "User-Agent": "apify-google-maps-scraper/1.0",
+                    "Accept": "application/json",
+                },
+            )
+        if r.status_code != 200:
+            logger.warning(f"Nominatim HTTP {r.status_code} for '{location}'")
+            return None
+        hits = r.json()
+        if not hits:
+            logger.warning(f"Nominatim returned no match for '{location}'")
+            return None
+        return float(hits[0]["lat"]), float(hits[0]["lon"])
+    except Exception as e:
+        logger.warning(f"Geocoding '{location}' failed: {e}")
+        return None
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",

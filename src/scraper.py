@@ -27,7 +27,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from .models import OutputView, ScraperInput
-from .utils import BASE_URL, RateLimiter, fetch_html, safe_get
+from .utils import BASE_URL, RateLimiter, fetch_html, geocode_location, safe_get
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,7 @@ class GoogleMapsScraper:
         self._seen_place_ids: set[str] = set()
         self._seen_cids: set[str] = set()
         self._website_cache: dict[str, dict[str, Any]] = {}
+        self._geocode_cache: dict[str, tuple[float, float] | None] = {}
 
     # ------------------------------------------------------------------ #
     # Public entry point                                                 #
@@ -111,28 +112,36 @@ class GoogleMapsScraper:
             query = f"{query} {location}".strip()
 
         lat, lng, zoom = self._resolve_geolocation(location)
-        query_enc = quote_plus(query)
 
-        # Multiple URL shapes — Google sometimes returns the home page instead
-        # of search results for one format but not another. Try them in order
-        # of reliability across retries.
-        url_variants: list[str] = [
-            # Canonical search URL with coords forces Google to treat as search
-            (
-                f"{BASE_URL}/maps/search/{query_enc}/@{lat},{lng},{zoom}z"
-                if lat is not None and lng is not None
-                else f"{BASE_URL}/maps/search/{query_enc}"
-            ),
-            # Legacy ?q= format — often redirects to the canonical search
-            f"{BASE_URL}/maps?q={query_enc}",
-            # api=1 sharing format — Google guarantees this resolves to search
-            f"{BASE_URL}/maps/search/?api=1&query={query_enc}",
-        ]
+        # Google Maps only returns a real search results page when the URL
+        # contains map coordinates. With just text we get the Maps home page.
+        # Geocode the location text via Nominatim (free, no API key) so we
+        # can build the coordinate-URL format that competitors use.
+        if lat is None and location:
+            coords = await self._geocode(location)
+            if coords:
+                lat, lng, zoom = coords[0], coords[1], 13
+                logger.info(f"Geocoded '{location}' -> ({lat:.4f}, {lng:.4f})")
 
-        params = {
-            "hl": self.config.language,
-            "gl": self.config.country_code,
-        }
+        keyword_enc = quote_plus(keywords.strip())
+        combined_enc = quote_plus(query)
+
+        # URL variants in order of reliability:
+        # 1. Keyword-only path + /@lat,lng,zoom (the format that actually works)
+        # 2. Combined path + coords (fallback when keyword alone is too vague)
+        # 3. Plain combined path (last-resort — often returns home page)
+        url_variants: list[str] = []
+        if lat is not None and lng is not None:
+            url_variants.append(
+                f"{BASE_URL}/maps/search/{keyword_enc}/@{lat},{lng},{zoom}z"
+            )
+            url_variants.append(
+                f"{BASE_URL}/maps/search/{combined_enc}/@{lat},{lng},{zoom}z"
+            )
+        url_variants.append(f"{BASE_URL}/maps/search/{combined_enc}")
+        url_variants.append(f"{BASE_URL}/maps?q={combined_enc}")
+
+        params = {"hl": self.config.language}
 
         # Content-level retry: rotate proxy AND URL format per attempt.
         html: str | None = None
@@ -792,6 +801,17 @@ class GoogleMapsScraper:
     # ------------------------------------------------------------------ #
     # Geolocation resolution                                             #
     # ------------------------------------------------------------------ #
+
+    async def _geocode(self, location: str) -> tuple[float, float] | None:
+        """Geocode a location string, cached for the life of the scraper."""
+        key = location.strip().lower()
+        if not key:
+            return None
+        if key in self._geocode_cache:
+            return self._geocode_cache[key]
+        coords = await geocode_location(location)
+        self._geocode_cache[key] = coords
+        return coords
 
     def _resolve_geolocation(
         self,
