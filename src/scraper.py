@@ -110,7 +110,6 @@ class GoogleMapsScraper:
         if location:
             query = f"{query} {location}".strip()
 
-        # Apply customGeolocation if provided
         lat, lng, zoom = self._resolve_geolocation(location)
 
         url = f"{BASE_URL}/maps/search/{quote_plus(query)}"
@@ -122,17 +121,41 @@ class GoogleMapsScraper:
             "gl": self.config.country_code,
         }
 
-        html = await fetch_html(
-            self.client, url, self.rate_limiter,
-            params=params,
-            proxy_config=self.proxy_config,
-        )
-        if not html:
-            logger.warning(f"No HTML returned for search: {query}")
-            return
+        # Content-level retry: rotate proxy when Google serves a non-Maps page
+        # (consent wall, CAPTCHA, regional redirect) — distinct from HTTP-level retries.
+        html: str | None = None
+        state: Any = None
+        for attempt in range(3):
+            if attempt == 0:
+                html = await fetch_html(
+                    self.client, url, self.rate_limiter,
+                    params=params, proxy_config=self.proxy_config,
+                )
+            else:
+                if self.proxy_config is None:
+                    break
+                logger.info(
+                    f"Non-Maps page on attempt {attempt} — rotating proxy for '{query}'"
+                )
+                try:
+                    fresh_proxy = await self.proxy_config.new_url()
+                    async with httpx.AsyncClient(proxy=fresh_proxy) as rc:
+                        html = await fetch_html(
+                            rc, url, self.rate_limiter, params=params,
+                        )
+                except Exception as exc:
+                    logger.warning(f"Proxy rotation failed: {exc}")
+                    break
 
-        state = self._parse_app_init_state(html)
-        places = self._extract_places_from_state(state, html)
+            if not html:
+                logger.warning(f"No HTML returned for search: {query}")
+                continue
+
+            state = self._parse_app_init_state(html)
+            if state is not None:
+                break
+
+        places = self._extract_places_from_state(state, html or "")
         logger.info(f"Extracted {len(places)} raw place entries for '{query}'")
 
         per_search_count = 0
@@ -229,35 +252,63 @@ class GoogleMapsScraper:
 
     def _parse_app_init_state(self, html: str) -> Any:
         """Extract and parse the APP_INITIALIZATION_STATE blob from the page."""
-        # Debug: check if we got a real Maps page or an error/challenge page
-        if "recaptcha" in html.lower() or "unusual traffic" in html.lower():
-            logger.error("Google returned a CAPTCHA challenge — proxy required or IP blocked")
-            return None
-        if "<title>" in html:
-            title = re.search(r"<title>([^<]+)</title>", html, re.IGNORECASE)
-            if title and "maps" not in title.group(1).lower():
-                logger.warning(f"Got non-Maps page: {title.group(1)[:60]}")
+        html_lower = html.lower()
 
-        match = APP_INIT_STATE_RE.search(html)
-        if not match:
-            # Fallback to a looser pattern — the blob sometimes ends differently
+        # Detect known non-results pages so the caller can rotate proxy and retry
+        if "recaptcha" in html_lower or "unusual traffic" in html_lower:
+            logger.warning("Google CAPTCHA detected — will rotate proxy and retry")
+            return None
+        if "before you continue" in html_lower or "consent.google.com" in html_lower:
+            logger.warning("Google consent page detected — will rotate proxy and retry")
+            return None
+        if 'id="gsr"' in html_lower and "maps" not in html_lower[:2000]:
+            # Plain Google Search page rather than Maps
+            logger.warning("Got Google Search page instead of Maps — will rotate proxy and retry")
+            return None
+
+        title_m = re.search(r"<title>([^<]+)</title>", html, re.IGNORECASE)
+        if title_m:
+            page_title = title_m.group(1)
+            if "maps" not in page_title.lower() and "google" not in page_title.lower():
+                logger.warning(f"Unexpected page title: '{page_title[:80]}' — will rotate proxy")
+                return None
+
+        # Try primary regex, then a looser pattern, then bracket-balance extraction
+        blob: str | None = None
+        m = APP_INIT_STATE_RE.search(html)
+        if m:
+            blob = m.group(1)
+        else:
             m2 = re.search(
                 r"APP_INITIALIZATION_STATE\s*=\s*(\[.+?\]);(?:window|\s)",
-                html,
-                re.DOTALL,
+                html, re.DOTALL,
             )
-            if not m2:
-                logger.warning(
-                    "APP_INITIALIZATION_STATE not found in HTML. "
-                    "This usually means Google returned a non-results page (captcha, login, etc.). "
-                    "Enable RESIDENTIAL proxies in the Proxy Configuration."
-                )
-                # Log first 500 chars of HTML for debugging
-                logger.debug(f"HTML starts: {html[:500]}")
-                return None
-            blob = m2.group(1)
-        else:
-            blob = match.group(1)
+            if m2:
+                blob = m2.group(1)
+            else:
+                pos = html.find("APP_INITIALIZATION_STATE")
+                if pos != -1:
+                    start = html.find("[", pos)
+                    if start != -1:
+                        depth, end = 0, start
+                        for i in range(start, min(start + 2_000_000, len(html))):
+                            ch = html[i]
+                            if ch == "[":
+                                depth += 1
+                            elif ch == "]":
+                                depth -= 1
+                                if depth == 0:
+                                    end = i + 1
+                                    break
+                        blob = html[start:end] if end > start else None
+
+        if not blob:
+            logger.warning(
+                "APP_INITIALIZATION_STATE not found — Google returned a non-Maps page. "
+                "Enable RESIDENTIAL (US region) proxies in Proxy Configuration."
+            )
+            logger.warning(f"Page preview: {html[:1000]!r}")
+            return None
 
         try:
             return json.loads(blob)

@@ -55,16 +55,22 @@ def get_headers(referer: str = "https://www.google.com/") -> dict[str, str]:
     """Return headers that mimic a real browser navigation to Google Maps."""
     return {
         "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
         "Referer": referer,
+        "Sec-Ch-Ua": '"Chromium";v="134", "Google Chrome";v="134", "Not-A.Brand";v="99"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
         "Sec-Fetch-Dest": "document",
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Site": "same-origin",
         "Sec-Fetch-User": "?1",
         "Upgrade-Insecure-Requests": "1",
+        # Bypass Google's cookie consent wall (EU/GDPR proxy IPs get this).
+        # CONSENT bypasses the legacy flow; SOCS bypasses the newer one.
+        "Cookie": "CONSENT=YES+cb.20240101-00-p0.en+FX+667; SOCS=CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg; NID=511=placeholder",
     }
 
 

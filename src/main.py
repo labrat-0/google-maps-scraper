@@ -76,23 +76,35 @@ async def main() -> None:
             f"max_results={config.max_results}"
         )
 
-        # 3. Proxy setup
+        # 3. Proxy setup — force US country to avoid GDPR consent pages
         proxy_config = None
         proxy_url = None
         try:
             proxy_config = await Actor.create_proxy_configuration(
                 actor_proxy_input=raw_input.get("proxyConfiguration"),
+                # Force US-origin IPs: non-US IPs often get Google's consent wall
+                # which returns a 200 with no MAP data instead of real results.
+                country_code="US",
             )
             if proxy_config:
                 proxy_url = await proxy_config.new_url()
         except Exception as e:
-            Actor.log.warning(f"Failed to create proxy configuration: {e}")
+            # country_code might not be supported with all proxy configs — retry without
+            Actor.log.warning(f"Proxy setup with US country failed ({e}), retrying without country filter")
+            try:
+                proxy_config = await Actor.create_proxy_configuration(
+                    actor_proxy_input=raw_input.get("proxyConfiguration"),
+                )
+                if proxy_config:
+                    proxy_url = await proxy_config.new_url()
+            except Exception as e2:
+                Actor.log.warning(f"Failed to create proxy configuration: {e2}")
 
         if not proxy_url and is_on_apify:
             await Actor.fail(
                 status_message=(
                     "Proxy required. Google Maps blocks datacenter IPs. "
-                    "Enable Apify Proxy with RESIDENTIAL group in "
+                    "Enable Apify Proxy with RESIDENTIAL group (US region) in "
                     "Proxy Configuration and re-run."
                 ),
             )
