@@ -37,7 +37,7 @@ APP_INIT_STATE_RE = re.compile(
     re.DOTALL,
 )
 CID_RE = re.compile(r"0x[0-9a-fA-F]+:0x[0-9a-fA-F]+")
-PLACE_URL_RE = re.compile(r"/maps/place/[^/]+/@[\-\d.,]+/data=[^?\"]+")
+PLACE_URL_RE = re.compile(r"/maps/place/[^/?\s\"'<>]+(?:/@[\-\d.,]+[^/?\s\"'<>]*)?(?:/data=[^?\s\"'<>]+)?")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 PHONE_RE = re.compile(r"\+?[\d][\d\s().\-]{7,}")
 LAT_LNG_RE = re.compile(r"@(-?\d+\.\d+),(-?\d+\.\d+)")
@@ -122,9 +122,11 @@ class GoogleMapsScraper:
         }
 
         # Content-level retry: rotate proxy when Google serves a non-Maps page
-        # (consent wall, CAPTCHA, regional redirect) — distinct from HTTP-level retries.
+        # OR a Maps page that contains no extractable results (some IPs get
+        # a minimal/empty response from Google even when they look like Maps).
         html: str | None = None
         state: Any = None
+        places: list[dict[str, Any]] = []
         for attempt in range(3):
             if attempt == 0:
                 html = await fetch_html(
@@ -135,7 +137,7 @@ class GoogleMapsScraper:
                 if self.proxy_config is None:
                     break
                 logger.info(
-                    f"Non-Maps page on attempt {attempt} — rotating proxy for '{query}'"
+                    f"Rotating proxy for '{query}' (attempt {attempt + 1}/3)"
                 )
                 try:
                     fresh_proxy = await self.proxy_config.new_url()
@@ -152,10 +154,15 @@ class GoogleMapsScraper:
                 continue
 
             state = self._parse_app_init_state(html)
-            if state is not None:
-                break
+            places = self._extract_places_from_state(state, html)
+            if places:
+                break  # got results — done
 
-        places = self._extract_places_from_state(state, html or "")
+            logger.warning(
+                f"0 places extracted on attempt {attempt + 1}/3 "
+                f"(state={'present' if state is not None else 'missing'}) — will rotate proxy"
+            )
+
         logger.info(f"Extracted {len(places)} raw place entries for '{query}'")
 
         per_search_count = 0
@@ -323,39 +330,115 @@ class GoogleMapsScraper:
     ) -> list[dict[str, Any]]:
         """Walk the nested state blob and extract place entries.
 
-        Google packs results under `state[3][2]` as a string that itself is a
-        JSON array prefixed with `)]}'`. Each entry in that array is a deeply
-        nested list where index 14 typically holds the business record.
+        Google's search results live inside a nested JSON string. The exact
+        path varies by rollout — we try several known locations, then fall
+        back to a recursive walk that picks up any list-of-place-records shape.
         """
         places: list[dict[str, Any]] = []
 
         if not state:
             return self._fallback_extract_from_html(raw_html)
 
-        # The pb-encoded results sit in a string at state[3][2]
-        raw_results = safe_get(state, 3, 2)
-        if isinstance(raw_results, str):
-            body = raw_results.lstrip()
-            if body.startswith(")]}'"):
-                body = body[4:].lstrip()
-            try:
-                parsed = json.loads(body)
-            except json.JSONDecodeError:
-                parsed = None
+        # Known locations for the pb-encoded results string across Maps variants
+        candidate_indices: list[tuple[int, ...]] = [
+            (3, 2), (3, 6), (3, 0, 2), (0, 2), (6, 2),
+        ]
 
-            if parsed is not None:
-                # The results live under parsed[64] (list) or parsed[0][1]
-                result_list = safe_get(parsed, 64) or safe_get(parsed, 0, 1)
-                if isinstance(result_list, list):
-                    for entry in result_list:
+        for idx in candidate_indices:
+            raw_results = safe_get(state, *idx)
+            parsed = self._parse_xssi_string(raw_results)
+            if parsed is None:
+                continue
+
+            # Try multiple known paths for the result list
+            result_lists: list[Any] = [
+                safe_get(parsed, 64),
+                safe_get(parsed, 0, 1),
+                safe_get(parsed, 0, 0, 1),
+                safe_get(parsed, 1, 1),
+            ]
+            for rl in result_lists:
+                if isinstance(rl, list):
+                    for entry in rl:
                         place = self._entry_to_place(entry)
                         if place:
                             places.append(place)
+                    if places:
+                        return places
+
+            # Last-resort recursive walk: find any nested list whose entries
+            # look like business records (have a name string deep inside)
+            if not places:
+                recursive = self._recursive_find_places(parsed)
+                if recursive:
+                    return recursive
 
         if not places:
+            # Dump state shape so we can see why extraction failed on Apify
+            logger.warning(
+                f"State parsed but no places found. "
+                f"Top-level shape: {self._describe_state(state)}"
+            )
             places = self._fallback_extract_from_html(raw_html)
 
         return places
+
+    def _parse_xssi_string(self, raw: Any) -> Any:
+        """Parse a Google-style JSON string that may have a )]}' XSSI guard."""
+        if not isinstance(raw, str):
+            return None
+        body = raw.lstrip()
+        if body.startswith(")]}'"):
+            body = body[4:].lstrip()
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError:
+            return None
+
+    def _recursive_find_places(
+        self,
+        node: Any,
+        depth: int = 0,
+        max_depth: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Walk arbitrary nested lists, returning any business-like records found."""
+        if depth > max_depth or not isinstance(node, list):
+            return []
+
+        # A result list looks like: [[...record...], [...record...], ...]
+        # where each record is a list with a name string at index 11 or 2
+        if len(node) >= 2 and all(isinstance(e, list) for e in node[:3]):
+            found: list[dict[str, Any]] = []
+            for entry in node:
+                place = self._entry_to_place(entry)
+                if place and place.get("name"):
+                    found.append(place)
+            if len(found) >= 2:  # require at least 2 to avoid false positives
+                return found
+
+        # Recurse into children
+        for child in node:
+            if isinstance(child, list):
+                result = self._recursive_find_places(child, depth + 1, max_depth)
+                if result:
+                    return result
+        return []
+
+    def _describe_state(self, state: Any) -> str:
+        """One-line structural summary for diagnostic logging."""
+        if not isinstance(state, list):
+            return f"type={type(state).__name__}"
+        parts = [f"len={len(state)}"]
+        for i, e in enumerate(state[:6]):
+            if isinstance(e, str):
+                parts.append(f"[{i}]=str({len(e)}ch)")
+            elif isinstance(e, list):
+                parts.append(f"[{i}]=list({len(e)})")
+            elif e is None:
+                parts.append(f"[{i}]=None")
+            else:
+                parts.append(f"[{i}]={type(e).__name__}")
+        return " ".join(parts)
 
     def _entry_to_place(self, entry: Any) -> dict[str, Any] | None:
         """Convert a raw APP_INIT result entry into a flat place dict."""
