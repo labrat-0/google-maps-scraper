@@ -82,9 +82,7 @@
             "title": "⭐ Minimum Rating",
             "type": "integer",
             "description": "Only include places with at least this star rating (0 = no filter).",
-            "editor": "select",
             "enum": [0, 3, 4, 5],
-            "enumTitles": ["Any rating", "3+ stars", "4+ stars", "5 stars only"],
             "default": 0
         },
         "includeClosed": {
