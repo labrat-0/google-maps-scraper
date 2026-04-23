@@ -141,6 +141,12 @@ async def fetch_html(
             status = response.status_code
 
             if status == 200:
+                # Log when Google redirects us (e.g. to /maps home or consent)
+                if str(response.url) != str(response.request.url):
+                    logger.info(
+                        f"Redirected: {str(response.request.url)[:80]} "
+                        f"-> {str(response.url)[:120]}"
+                    )
                 return response.text
 
             if status in (429, 403):

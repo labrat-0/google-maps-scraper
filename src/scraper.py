@@ -111,23 +111,37 @@ class GoogleMapsScraper:
             query = f"{query} {location}".strip()
 
         lat, lng, zoom = self._resolve_geolocation(location)
+        query_enc = quote_plus(query)
 
-        url = f"{BASE_URL}/maps/search/{quote_plus(query)}"
-        if lat is not None and lng is not None:
-            url += f"/@{lat},{lng},{zoom}z"
+        # Multiple URL shapes — Google sometimes returns the home page instead
+        # of search results for one format but not another. Try them in order
+        # of reliability across retries.
+        url_variants: list[str] = [
+            # Canonical search URL with coords forces Google to treat as search
+            (
+                f"{BASE_URL}/maps/search/{query_enc}/@{lat},{lng},{zoom}z"
+                if lat is not None and lng is not None
+                else f"{BASE_URL}/maps/search/{query_enc}"
+            ),
+            # Legacy ?q= format — often redirects to the canonical search
+            f"{BASE_URL}/maps?q={query_enc}",
+            # api=1 sharing format — Google guarantees this resolves to search
+            f"{BASE_URL}/maps/search/?api=1&query={query_enc}",
+        ]
 
         params = {
             "hl": self.config.language,
             "gl": self.config.country_code,
         }
 
-        # Content-level retry: rotate proxy when Google serves a non-Maps page
-        # OR a Maps page that contains no extractable results (some IPs get
-        # a minimal/empty response from Google even when they look like Maps).
+        # Content-level retry: rotate proxy AND URL format per attempt.
         html: str | None = None
         state: Any = None
         places: list[dict[str, Any]] = []
         for attempt in range(3):
+            url = url_variants[attempt % len(url_variants)]
+            logger.info(f"Attempt {attempt + 1}/3: {url[:120]}")
+
             if attempt == 0:
                 html = await fetch_html(
                     self.client, url, self.rate_limiter,
@@ -136,9 +150,6 @@ class GoogleMapsScraper:
             else:
                 if self.proxy_config is None:
                     break
-                logger.info(
-                    f"Rotating proxy for '{query}' (attempt {attempt + 1}/3)"
-                )
                 try:
                     fresh_proxy = await self.proxy_config.new_url()
                     async with httpx.AsyncClient(proxy=fresh_proxy) as rc:
@@ -429,7 +440,7 @@ class GoogleMapsScraper:
         if not isinstance(state, list):
             return f"type={type(state).__name__}"
         parts = [f"len={len(state)}"]
-        for i, e in enumerate(state[:6]):
+        for i, e in enumerate(state[:8]):
             if isinstance(e, str):
                 parts.append(f"[{i}]=str({len(e)}ch)")
             elif isinstance(e, list):
@@ -438,7 +449,27 @@ class GoogleMapsScraper:
                 parts.append(f"[{i}]=None")
             else:
                 parts.append(f"[{i}]={type(e).__name__}")
+        # Dump first string found anywhere in the top levels (often reveals
+        # whether Google sent a search response, home page, or consent).
+        for i, e in enumerate(state[:8]):
+            sample = self._find_first_string(e, max_depth=4)
+            if sample:
+                parts.append(f"[{i}].str={sample[:80]!r}")
+                break
         return " ".join(parts)
+
+    def _find_first_string(self, node: Any, max_depth: int = 4) -> str | None:
+        """Walk a nested structure, return the first non-trivial string found."""
+        if max_depth < 0:
+            return None
+        if isinstance(node, str) and len(node) > 4:
+            return node
+        if isinstance(node, list):
+            for child in node:
+                s = self._find_first_string(child, max_depth - 1)
+                if s:
+                    return s
+        return None
 
     def _entry_to_place(self, entry: Any) -> dict[str, Any] | None:
         """Convert a raw APP_INIT result entry into a flat place dict."""
