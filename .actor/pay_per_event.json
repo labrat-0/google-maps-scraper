@@ -1,0 +1,17 @@
+{
+    "result_place": {
+        "eventTitle": "Place scraped",
+        "eventDescription": "A full Google Maps place record (name, address, phone, website, rating, coordinates, categories, hours).",
+        "eventPriceUsd": 0.0008
+    },
+    "result_review": {
+        "eventTitle": "Review scraped",
+        "eventDescription": "A single review (rating + text) attached to a place.",
+        "eventPriceUsd": 0.0004
+    },
+    "result_lead": {
+        "eventTitle": "Lead enriched",
+        "eventDescription": "A place where contact enrichment returned at least one email or social profile — ready-to-use sales lead.",
+        "eventPriceUsd": 0.0015
+    }
+}

@@ -1,0 +1,17 @@
+{
+    "actorSpecification": 1,
+    "name": "google-maps-scraper",
+    "title": "Google Maps Scraper — Places, Reviews & Leads",
+    "description": "Scrape Google Maps places, reviews, and business leads. No API keys, no login. Fast HTTP-based scraping with batch keywords × locations. Pairs with linkedin-jobs-scraper for full lead enrichment.",
+    "version": "1.0.0",
+    "buildTag": "latest",
+    "input": "./input_schema.json",
+    "output": "./output_schema.json",
+    "storages": {
+        "dataset": "./dataset_schema.json"
+    },
+    "dockerfile": "./Dockerfile",
+    "minMemoryMbytes": 512,
+    "maxMemoryMbytes": 4096,
+    "categories": ["BUSINESS", "LEAD_GENERATION", "MAPS", "SEO_TOOLS"]
+}

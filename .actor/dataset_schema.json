@@ -1,0 +1,216 @@
+{
+    "actorSpecification": 1,
+    "fields": {
+        "type": "object",
+        "properties": {
+            "placeId": {
+                "type": "string",
+                "description": "Google's unique place identifier.",
+                "example": "ChIJN1t_tDeuEmsRUsoyG83frY4"
+            },
+            "googleCid": {
+                "type": "string",
+                "description": "Google Customer ID — alternate place identifier in hex:hex format.",
+                "example": "0x89c25855c6480299:0x55194eb0b1bb2a3c"
+            },
+            "name": {
+                "type": "string",
+                "description": "Business name as displayed on Google Maps.",
+                "example": "Blue Bottle Coffee"
+            },
+            "address": {
+                "type": "string",
+                "description": "Full street address.",
+                "example": "2001 E Cesar Chavez St, Austin, TX 78702"
+            },
+            "categories": {
+                "type": "array",
+                "description": "All Google Maps categories assigned to this place.",
+                "items": { "type": "string" },
+                "example": ["Coffee shop", "Cafe", "Breakfast restaurant"]
+            },
+            "categoryMain": {
+                "type": "string",
+                "description": "Primary category (first in the list).",
+                "example": "Coffee shop"
+            },
+            "rating": {
+                "type": "number",
+                "description": "Average star rating (1-5).",
+                "example": 4.6
+            },
+            "reviewCount": {
+                "type": "integer",
+                "description": "Total number of Google reviews.",
+                "example": 512
+            },
+            "phone": {
+                "type": "string",
+                "description": "Phone number as displayed on the Google Maps listing.",
+                "example": "+1 512-524-1544"
+            },
+            "website": {
+                "type": "string",
+                "description": "Business website URL as linked from the listing.",
+                "example": "https://bluebottlecoffee.com/"
+            },
+            "priceLevel": {
+                "type": "string",
+                "description": "Price bracket ($ to $$$$) when shown.",
+                "example": "$$"
+            },
+            "latitude": {
+                "type": "number",
+                "description": "Latitude of the place.",
+                "example": 30.2592
+            },
+            "longitude": {
+                "type": "number",
+                "description": "Longitude of the place.",
+                "example": -97.7242
+            },
+            "openingHours": {
+                "type": "object",
+                "description": "Day-of-week → hours string mapping.",
+                "example": {
+                    "Monday": "7:00 AM – 6:00 PM",
+                    "Tuesday": "7:00 AM – 6:00 PM"
+                }
+            },
+            "thumbnailUrl": {
+                "type": "string",
+                "description": "Thumbnail image URL from the Google Maps listing.",
+                "example": "https://lh5.googleusercontent.com/..."
+            },
+            "placeUrl": {
+                "type": "string",
+                "description": "Direct URL to the Google Maps place listing.",
+                "example": "https://www.google.com/maps/place/Blue+Bottle+Coffee/@30.2592,-97.7242,15z"
+            },
+            "permanentlyClosed": {
+                "type": "boolean",
+                "description": "True if Google Maps marks the place as permanently closed.",
+                "example": false
+            },
+            "temporarilyClosed": {
+                "type": "boolean",
+                "description": "True if Google Maps marks the place as temporarily closed.",
+                "example": false
+            },
+            "searchKeywords": {
+                "type": "string",
+                "description": "The keyword query that produced this result (batch mode tracking).",
+                "example": "coffee shops"
+            },
+            "searchLocation": {
+                "type": "string",
+                "description": "The location query that produced this result (batch mode tracking).",
+                "example": "Austin, TX"
+            },
+            "reviews": {
+                "type": "array",
+                "description": "Extracted reviews (up to maxReviewsPerPlace). Each item has rating and text.",
+                "items": { "type": "object" },
+                "example": [
+                    { "rating": 5, "text": "Amazing espresso. Friendly staff." }
+                ]
+            },
+            "reviewSentiment": {
+                "type": "object",
+                "description": "Positive (4-5★), neutral (3★), negative (1-2★) counts + total.",
+                "example": {
+                    "positive": 8,
+                    "neutral": 1,
+                    "negative": 1,
+                    "total": 10
+                }
+            },
+            "emails": {
+                "type": "array",
+                "description": "Emails scraped from the business website (requires enrichContacts).",
+                "items": { "type": "string" },
+                "example": ["hello@bluebottlecoffee.com"]
+            },
+            "socialProfiles": {
+                "type": "object",
+                "description": "Social profile links from the business website (requires enrichContacts).",
+                "example": {
+                    "instagram": "https://instagram.com/bluebottle",
+                    "facebook": "https://facebook.com/bluebottlecoffee"
+                }
+            },
+            "linkedinSearchUrl": {
+                "type": "string",
+                "description": "Ready-to-use LinkedIn company search URL (requires enrichLinkedIn). Paste into labrat011/linkedin-jobs-scraper's companyFilter.",
+                "example": "https://www.linkedin.com/search/results/companies/?keywords=Blue%20Bottle%20Coffee"
+            },
+            "scrapedAt": {
+                "type": "string",
+                "description": "UTC ISO 8601 timestamp when the record was scraped.",
+                "example": "2026-04-22T18:34:00+00:00"
+            }
+        }
+    },
+    "views": {
+        "overview": {
+            "title": "Overview",
+            "transformation": {
+                "fields": [
+                    "name",
+                    "categoryMain",
+                    "rating",
+                    "reviewCount",
+                    "address",
+                    "phone",
+                    "website",
+                    "placeUrl"
+                ]
+            },
+            "display": {
+                "component": "table",
+                "properties": {
+                    "name": { "label": "Name", "format": "text" },
+                    "categoryMain": { "label": "Category", "format": "text" },
+                    "rating": { "label": "★", "format": "number" },
+                    "reviewCount": { "label": "Reviews", "format": "number" },
+                    "address": { "label": "Address", "format": "text" },
+                    "phone": { "label": "Phone", "format": "text" },
+                    "website": { "label": "Website", "format": "link" },
+                    "placeUrl": { "label": "Google Maps", "format": "link" }
+                }
+            }
+        },
+        "leads": {
+            "title": "Leads",
+            "transformation": {
+                "fields": [
+                    "name",
+                    "categoryMain",
+                    "phone",
+                    "website",
+                    "emails",
+                    "socialProfiles",
+                    "linkedinSearchUrl",
+                    "address",
+                    "rating",
+                    "reviewCount"
+                ]
+            },
+            "display": {
+                "component": "table",
+                "properties": {
+                    "name": { "label": "Business", "format": "text" },
+                    "categoryMain": { "label": "Category", "format": "text" },
+                    "phone": { "label": "Phone", "format": "text" },
+                    "website": { "label": "Website", "format": "link" },
+                    "emails": { "label": "Emails", "format": "text" },
+                    "socialProfiles": { "label": "Socials", "format": "text" },
+                    "linkedinSearchUrl": { "label": "LinkedIn", "format": "link" },
+                    "address": { "label": "Address", "format": "text" },
+                    "rating": { "label": "★", "format": "number" },
+                    "reviewCount": { "label": "Reviews", "format": "number" }
+                }
+            }
+        }
+    }
+}

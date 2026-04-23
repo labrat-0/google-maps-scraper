@@ -1,0 +1,13 @@
+{
+    "actorOutputSchemaVersion": 1,
+    "title": "Google Maps Scraper Results",
+    "description": "Google Maps places, reviews, and leads with flat JSON output.",
+    "properties": {
+        "results": {
+            "type": "string",
+            "title": "Results",
+            "description": "Scraped places — names, ratings, phone, website, coordinates, categories, opening hours, reviews, and optional contact/LinkedIn enrichment.",
+            "template": "{{links.apiDefaultDatasetUrl}}/items"
+        }
+    }
+}

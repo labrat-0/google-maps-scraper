@@ -1,0 +1,182 @@
+{
+    "title": "Google Maps Scraper",
+    "description": "Scrape Google Maps places, reviews, and business leads. No API keys, no login. Fast HTTP-based scraping with batch keywords × locations, review sentiment, and ready-to-use LinkedIn enrichment. Perfect for lead generation, local SEO research, and competitor intelligence.",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "keywords": {
+            "sectionCaption": "🔍 Search Parameters",
+            "sectionDescription": "Define what to search on Google Maps. Use single fields for one search, or use the list fields below for batch mode — all keyword × location combinations run in a single job and results are deduplicated by placeId and googleCid.",
+            "title": "🔍 Keywords",
+            "type": "string",
+            "description": "Business type, category, or keyword to search (e.g. 'coffee shops', 'dentists', 'plumbers near me'). Combined with Location to form the search query. Use Keywords List below for batch mode.",
+            "editor": "textfield",
+            "prefill": "coffee shops"
+        },
+        "location": {
+            "title": "📍 Location",
+            "type": "string",
+            "description": "Where to search (e.g. 'Austin, TX', 'London, UK', '10001'). Free-text — accepts city, neighborhood, ZIP, or country. Use Locations List below for batch mode. Or use Custom Geolocation below for precise polygon targeting.",
+            "editor": "textfield",
+            "prefill": "Austin, TX"
+        },
+        "keywordsList": {
+            "title": "📋 Keywords List (Batch Mode)",
+            "type": "array",
+            "description": "Run many keyword searches in one job. Combined with every entry in Locations List — e.g. ['dentist', 'orthodontist'] × ['Austin, TX', 'Dallas, TX'] = 4 searches, one run. Overrides the single Keywords field when provided.",
+            "editor": "stringList",
+            "items": { "type": "string" },
+            "example": ["coffee shops", "coworking spaces", "yoga studios"]
+        },
+        "locationsList": {
+            "title": "🗺️ Locations List (Batch Mode)",
+            "type": "array",
+            "description": "Multiple locations to search across in batch mode. Cross-multiplied with Keywords List. Leave empty or pass a single country to search broadly.",
+            "editor": "stringList",
+            "items": { "type": "string" },
+            "example": ["Austin, TX", "Dallas, TX", "Houston, TX"]
+        },
+        "placeUrls": {
+            "title": "🔗 Direct Place URLs",
+            "type": "array",
+            "description": "Skip search and scrape these Google Maps place URLs directly. Useful when you already have a list of businesses from a previous run, a spreadsheet, or the Places API.",
+            "editor": "stringList",
+            "items": { "type": "string" },
+            "example": [
+                "https://www.google.com/maps/place/Example+Cafe/@30.2672,-97.7431,15z"
+            ]
+        },
+        "customGeolocation": {
+            "title": "🌐 Custom Geolocation (GeoJSON)",
+            "type": "object",
+            "description": "Optional GeoJSON Point or Polygon for precise area targeting. When provided, the scraper searches within the geometry instead of free-text location. Supports { \"type\": \"Point\", \"coordinates\": [lng, lat] } or { \"type\": \"Polygon\", \"coordinates\": [[[lng, lat], ...]] }.",
+            "editor": "json",
+            "example": {
+                "type": "Point",
+                "coordinates": [-97.7431, 30.2672]
+            }
+        },
+        "language": {
+            "sectionCaption": "🌎 Locale",
+            "sectionDescription": "Controls the language and region of Google Maps results.",
+            "title": "🌐 Language",
+            "type": "string",
+            "description": "Language code for Google Maps (ISO 639-1). Affects place names, categories, and reviews.",
+            "editor": "select",
+            "enum": ["en", "es", "fr", "de", "it", "pt", "nl", "pl", "ja", "zh-CN", "ko", "ru", "tr", "ar"],
+            "enumTitles": ["English", "Spanish", "French", "German", "Italian", "Portuguese", "Dutch", "Polish", "Japanese", "Chinese (Simplified)", "Korean", "Russian", "Turkish", "Arabic"],
+            "default": "en"
+        },
+        "countryCode": {
+            "title": "🏳️ Country Code",
+            "type": "string",
+            "description": "Country code for Google Maps regional bias (ISO 3166-1 alpha-2, lowercase).",
+            "editor": "select",
+            "enum": ["us", "gb", "ca", "au", "de", "fr", "es", "it", "nl", "br", "mx", "jp", "in", "za", "ae"],
+            "enumTitles": ["United States", "United Kingdom", "Canada", "Australia", "Germany", "France", "Spain", "Italy", "Netherlands", "Brazil", "Mexico", "Japan", "India", "South Africa", "UAE"],
+            "default": "us"
+        },
+        "minRating": {
+            "sectionCaption": "🎯 Filters",
+            "sectionDescription": "Narrow your results by rating and operational status.",
+            "title": "⭐ Minimum Rating",
+            "type": "integer",
+            "description": "Only include places with at least this star rating (0 = no filter).",
+            "editor": "select",
+            "enum": [0, 3, 4, 5],
+            "enumTitles": ["Any rating", "3+ stars", "4+ stars", "5 stars only"],
+            "default": 0
+        },
+        "includeClosed": {
+            "title": "🚫 Include Permanently Closed",
+            "type": "boolean",
+            "description": "When disabled, skips places marked permanently or temporarily closed on Google Maps.",
+            "default": true
+        },
+        "maxReviewsPerPlace": {
+            "sectionCaption": "💬 Reviews",
+            "sectionDescription": "Reviews are billed separately at $0.40 per 1,000 — set to 0 to skip for cheapest runs.",
+            "title": "💬 Max Reviews per Place",
+            "type": "integer",
+            "description": "How many reviews to extract for each place. Set to 0 to skip reviews entirely. Default 10 balances cost and signal.",
+            "default": 10,
+            "minimum": 0,
+            "maximum": 500
+        },
+        "includeReviewSentiment": {
+            "title": "📊 Include Review Sentiment",
+            "type": "boolean",
+            "description": "Adds a simple positive/neutral/negative breakdown based on review star ratings. No LLM cost — adds zero to your bill.",
+            "default": true
+        },
+        "reviewLanguage": {
+            "title": "🗣️ Review Language",
+            "type": "string",
+            "description": "Language code for reviews (ISO 639-1). Leave as 'en' for English.",
+            "editor": "textfield",
+            "default": "en"
+        },
+        "enrichContacts": {
+            "sectionCaption": "🎁 Enrichment (Lead Generation)",
+            "sectionDescription": "Turn place listings into full sales leads. Contact enrichment fetches each business website to extract emails and social profile links. Billed as 'result_lead' ($1.50 per 1,000) when it produces data.",
+            "title": "📧 Enrich Contacts (Email + Social Profiles)",
+            "type": "boolean",
+            "description": "When enabled, fetches each place's website and extracts emails, Facebook, Instagram, Twitter/X, LinkedIn, YouTube, TikTok, and Pinterest profile URLs. Cached per unique website within the run.",
+            "default": false
+        },
+        "enrichLinkedIn": {
+            "title": "🔗 Enrich with LinkedIn Search URL",
+            "type": "boolean",
+            "description": "Adds a ready-to-use LinkedIn company search URL to each result — feed it straight into labrat011/linkedin-jobs-scraper's companyFilter for full lead pipelines. Free.",
+            "default": false
+        },
+        "outputView": {
+            "sectionCaption": "📤 Output",
+            "sectionDescription": "Choose which slice of the data to push to the dataset.",
+            "title": "📤 Output View",
+            "type": "string",
+            "description": "Pre-filter results for common use cases. 'places' returns full place records, 'reviews' focuses on review data, 'leads' returns only contact-ready fields.",
+            "editor": "select",
+            "enum": ["places", "reviews", "leads"],
+            "enumTitles": [
+                "🏪 Places — full business records",
+                "💬 Reviews — review-focused slice",
+                "📧 Leads — contact-ready slice (use with enrichContacts)"
+            ],
+            "default": "places"
+        },
+        "maxResults": {
+            "sectionCaption": "⚙️ Scraper Settings",
+            "sectionDescription": "Control total output and per-search caps.",
+            "title": "📊 Max Results",
+            "type": "integer",
+            "description": "Maximum total places to return. Free users capped at 25. Subscribe for up to 10,000.",
+            "default": 100,
+            "prefill": 25,
+            "minimum": 1,
+            "maximum": 10000
+        },
+        "maxResultsPerSearch": {
+            "title": "🔢 Max Results Per Search (Batch Mode)",
+            "type": "integer",
+            "description": "Cap per keyword/location combination in batch mode. Example: 3 keywords × 2 locations × 20 per search = up to 120 total results.",
+            "default": 100,
+            "prefill": 25,
+            "minimum": 1,
+            "maximum": 1000
+        },
+        "proxyConfiguration": {
+            "sectionCaption": "🌐 Proxy Configuration",
+            "sectionDescription": "Google Maps blocks most datacenter IPs. Residential proxies are strongly recommended for reliable results at scale.",
+            "title": "🔒 Proxy Configuration",
+            "type": "object",
+            "description": "Proxy settings. RESIDENTIAL group gives the best success rate — without it, Google may serve CAPTCHAs or 429s.",
+            "editor": "proxy",
+            "prefill": {
+                "useApifyProxy": true,
+                "apifyProxyGroups": ["RESIDENTIAL"]
+            }
+        }
+    },
+    "required": []
+}

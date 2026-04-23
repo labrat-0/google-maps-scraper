@@ -1,0 +1,27 @@
+# Apify Actor artifacts
+storage/
+apify_storage/
+crawlee_storage/
+.actor/.cache/
+
+# Internal knowledge (do not publish)
+.arc/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Logs
+*.log
