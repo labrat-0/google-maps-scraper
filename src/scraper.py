@@ -229,6 +229,15 @@ class GoogleMapsScraper:
 
     def _parse_app_init_state(self, html: str) -> Any:
         """Extract and parse the APP_INITIALIZATION_STATE blob from the page."""
+        # Debug: check if we got a real Maps page or an error/challenge page
+        if "recaptcha" in html.lower() or "unusual traffic" in html.lower():
+            logger.error("Google returned a CAPTCHA challenge — proxy required or IP blocked")
+            return None
+        if "<title>" in html:
+            title = re.search(r"<title>([^<]+)</title>", html, re.IGNORECASE)
+            if title and "maps" not in title.group(1).lower():
+                logger.warning(f"Got non-Maps page: {title.group(1)[:60]}")
+
         match = APP_INIT_STATE_RE.search(html)
         if not match:
             # Fallback to a looser pattern — the blob sometimes ends differently
@@ -238,7 +247,13 @@ class GoogleMapsScraper:
                 re.DOTALL,
             )
             if not m2:
-                logger.warning("APP_INITIALIZATION_STATE not found in HTML")
+                logger.warning(
+                    "APP_INITIALIZATION_STATE not found in HTML. "
+                    "This usually means Google returned a non-results page (captcha, login, etc.). "
+                    "Enable RESIDENTIAL proxies in the Proxy Configuration."
+                )
+                # Log first 500 chars of HTML for debugging
+                logger.debug(f"HTML starts: {html[:500]}")
                 return None
             blob = m2.group(1)
         else:
