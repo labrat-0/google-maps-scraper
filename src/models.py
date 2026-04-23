@@ -74,6 +74,13 @@ class ScraperInput(BaseModel):
     @classmethod
     def from_actor_input(cls, raw: dict[str, Any]) -> ScraperInput:
         """Map Apify camelCase input to Pydantic snake_case fields."""
+        # minRating comes as string from the select dropdown, convert to float
+        min_rating_str = raw.get("minRating", "0")
+        try:
+            min_rating = float(min_rating_str)
+        except (ValueError, TypeError):
+            min_rating = 0.0
+
         return cls(
             keywords=raw.get("keywords", ""),
             location=raw.get("location", ""),
@@ -83,7 +90,7 @@ class ScraperInput(BaseModel):
             custom_geolocation=raw.get("customGeolocation"),
             language=raw.get("language", "en") or "en",
             country_code=raw.get("countryCode", "us") or "us",
-            min_rating=raw.get("minRating", 0.0),
+            min_rating=min_rating,
             include_closed=raw.get("includeClosed", True),
             max_reviews_per_place=raw.get("maxReviewsPerPlace", 10),
             review_language=raw.get("reviewLanguage", "en") or "en",

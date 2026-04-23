@@ -80,10 +80,12 @@
             "sectionCaption": "🎯 Filters",
             "sectionDescription": "Narrow your results by rating and operational status.",
             "title": "⭐ Minimum Rating",
-            "type": "integer",
-            "description": "Only include places with at least this star rating (0 = no filter).",
-            "enum": [0, 3, 4, 5],
-            "default": 0
+            "type": "string",
+            "description": "Only include places with at least this star rating.",
+            "editor": "select",
+            "enum": ["0", "3", "4", "5"],
+            "enumTitles": ["Any rating", "3+ stars", "4+ stars", "5 stars only"],
+            "default": "0"
         },
         "includeClosed": {
             "title": "🚫 Include Permanently Closed",
