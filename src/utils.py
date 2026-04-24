@@ -399,6 +399,20 @@ _EXTRACT_PLACES_JS = """
             var lngStr  = getParam(href, '!4d');
             var placeId = getParam(href, '!19s');
             var cid     = getParam(href, '!1s');
+
+            // Thumbnail: find the first googleusercontent img within the card.
+            // Google Maps renders a preview photo per result which we can
+            // harvest without a detail-page fetch.
+            var thumb = '';
+            var imgs = a.querySelectorAll('img');
+            for (var j = 0; j < imgs.length; j++) {
+                var src = imgs[j].src || '';
+                if (src && src.indexOf('googleusercontent') >= 0) {
+                    thumb = src;
+                    break;
+                }
+            }
+
             out.push({
                 href:       href,
                 text:       (a.innerText || a.textContent || '').trim(),
@@ -406,7 +420,8 @@ _EXTRACT_PLACES_JS = """
                 lat:        latStr ? parseFloat(latStr) : null,
                 lng:        lngStr ? parseFloat(lngStr) : null,
                 placeId:    (placeId.indexOf('ChIJ') === 0) ? placeId : '',
-                cid:        (cid.indexOf('0x') === 0) ? cid : ''
+                cid:        (cid.indexOf('0x') === 0) ? cid : '',
+                thumbnail:  thumb
             });
         }
         return JSON.stringify(out);
@@ -451,6 +466,10 @@ class BrowserFetcher:
         self._browser: Any = None
         self._context: Any = None
         self.last_extracted_places: list[dict] = []
+        # Set when the proxy rejects HTTPS CONNECT tunneling. Scraper checks
+        # this to abort retries early — every subsequent navigation would also
+        # fail with the same error, wasting 30s/attempt on selector waits.
+        self.proxy_tunnel_failed: bool = False
 
     async def start(self) -> None:
         """Launch Chromium and create a reusable context."""
@@ -540,7 +559,20 @@ class BrowserFetcher:
             try:
                 await page.goto(url, wait_until="commit", timeout=nav_timeout_ms)
             except Exception as e:
+                msg = str(e)
                 logger.warning(f"Browser goto issue on {url[:80]}: {e}")
+                # ERR_TUNNEL_CONNECTION_FAILED means the proxy rejected the
+                # HTTPS CONNECT request. Every subsequent navigation will fail
+                # the same way — mark the fetcher so the scraper skips retries.
+                if "ERR_TUNNEL_CONNECTION_FAILED" in msg:
+                    self.proxy_tunnel_failed = True
+                    logger.error(
+                        "PROXY TUNNEL FAILURE — the current proxy does not "
+                        "support HTTPS CONNECT. This is typical of GOOGLE_SERP "
+                        "(HTTP-only). Switch Proxy Configuration to RESIDENTIAL."
+                    )
+                    self.last_extracted_places = []
+                    return None
 
             try:
                 await page.wait_for_selector(wait_selector, timeout=selector_timeout_ms)

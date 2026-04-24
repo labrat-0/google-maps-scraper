@@ -93,6 +93,11 @@
                 "description": "Direct URL to the Google Maps place listing.",
                 "example": "https://www.google.com/maps/place/Blue+Bottle+Coffee/@30.2592,-97.7242,15z"
             },
+            "streetViewUrl": {
+                "type": "string",
+                "description": "Google Maps Street View deep link for the place's coordinates. Opens the panorama viewer in a browser. No API key required.",
+                "example": "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=30.2592,-97.7242"
+            },
             "permanentlyClosed": {
                 "type": "boolean",
                 "description": "True if Google Maps marks the place as permanently closed.",

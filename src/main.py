@@ -94,10 +94,9 @@ async def main() -> None:
             f"max_results={config.max_results}"
         )
 
-        # 3. Proxy setup. GOOGLE_SERP is the recommended group (auto-selects
-        # IPs that bypass Google's bot detection); country_code is skipped
-        # because GOOGLE_SERP handles region selection internally and the
-        # combination can be rejected by Apify.
+        # 3. Proxy setup. RESIDENTIAL is required — the browser (Playwright)
+        # needs HTTPS CONNECT tunneling, which GOOGLE_SERP does NOT support
+        # (GOOGLE_SERP is HTTP-only and returns pre-rendered HTML).
         proxy_config = None
         proxy_url = None
         try:
@@ -112,9 +111,10 @@ async def main() -> None:
         if not proxy_url and is_on_apify:
             await Actor.fail(
                 status_message=(
-                    "Proxy required. Google Maps blocks datacenter IPs. "
-                    "Enable Apify Proxy with GOOGLE_SERP group (recommended) "
-                    "or RESIDENTIAL in Proxy Configuration and re-run."
+                    "Proxy required. Enable Apify Proxy with RESIDENTIAL group "
+                    "(country US recommended) in Proxy Configuration. "
+                    "Do NOT use GOOGLE_SERP — it is HTTP-only and breaks "
+                    "browser-based scraping."
                 ),
             )
             return
@@ -123,6 +123,23 @@ async def main() -> None:
                 "No proxy configured. Google may block direct connections. "
                 "Continuing for local testing only.",
             )
+
+        # Guard against the common misconfiguration that breaks browser mode:
+        # GOOGLE_SERP proxy is HTTP-only and causes ERR_TUNNEL_CONNECTION_FAILED
+        # on every Playwright navigation. Fail fast with a clear message.
+        proxy_input = raw_input.get("proxyConfiguration") or {}
+        requested_groups = proxy_input.get("apifyProxyGroups") or []
+        if is_on_apify and "GOOGLE_SERP" in requested_groups:
+            await Actor.fail(
+                status_message=(
+                    "GOOGLE_SERP proxy is not compatible with this actor. "
+                    "It only supports plain HTTP requests (no HTTPS tunneling), "
+                    "so the headless browser cannot reach Google Maps. "
+                    "Switch Proxy Configuration to RESIDENTIAL (country US) "
+                    "and re-run."
+                ),
+            )
+            return
 
         # 4. State persistence (survives migrations)
         state = await Actor.use_state(

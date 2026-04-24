@@ -197,6 +197,15 @@ class GoogleMapsScraper:
                 # user's limit to ensure we don't stop at a lazy-load stall.
                 scroll_target = min(self.config.max_results_per_search + 5, 120)
                 html = await self.browser.fetch(url, scroll_target=scroll_target)
+
+                # If the proxy rejected HTTPS tunneling, every other URL
+                # variant will fail identically — bail out immediately.
+                if self.browser.proxy_tunnel_failed:
+                    logger.error(
+                        "Aborting search: proxy does not support HTTPS tunneling. "
+                        "Reconfigure with RESIDENTIAL proxy group and re-run."
+                    )
+                    return
             else:
                 # Fallback to HTTP fetch (local testing without browser)
                 html = await fetch_html(
@@ -751,6 +760,12 @@ class GoogleMapsScraper:
             lat = float(coord_m.group(1)) if coord_m else None
             lng = float(coord_m.group(2)) if coord_m else None
 
+            street_view_url = (
+                f"https://www.google.com/maps/@?api=1&map_action=pano"
+                f"&viewpoint={lat},{lng}"
+                if lat is not None and lng is not None
+                else ""
+            )
             places.append({
                 "placeId": "",
                 "googleCid": cid_m.group(0) if cid_m else "",
@@ -769,6 +784,7 @@ class GoogleMapsScraper:
                 "thumbnailUrl": "",
                 "images": [],
                 "placeUrl": full_url,
+                "streetViewUrl": street_view_url,
                 "permanentlyClosed": False,
                 "temporarilyClosed": False,
                 "scrapedAt": "",
@@ -813,6 +829,20 @@ class GoogleMapsScraper:
                 f"{BASE_URL}{href}" if href.startswith("/") else href
             )
 
+            thumbnail = card.get("thumbnail", "") or ""
+            lat = card.get("lat")
+            lng = card.get("lng")
+
+            # Street View deep link — works without an API key since it just
+            # opens Google Maps Street View viewer for the coordinates. No
+            # image download, but gives users a direct path to exterior photos.
+            street_view_url = (
+                f"https://www.google.com/maps/@?api=1&map_action=pano"
+                f"&viewpoint={lat},{lng}"
+                if lat is not None and lng is not None
+                else ""
+            )
+
             places.append({
                 "placeId": card.get("placeId", ""),
                 "googleCid": card.get("cid", ""),
@@ -825,12 +855,13 @@ class GoogleMapsScraper:
                 "phone": "",
                 "website": "",
                 "priceLevel": card_fields["priceLevel"],
-                "latitude": card.get("lat"),
-                "longitude": card.get("lng"),
+                "latitude": lat,
+                "longitude": lng,
                 "openingHours": {},
-                "thumbnailUrl": "",
-                "images": [],
+                "thumbnailUrl": thumbnail,
+                "images": [thumbnail] if thumbnail else [],
                 "placeUrl": full_url,
+                "streetViewUrl": street_view_url,
                 "permanentlyClosed": False,
                 "temporarilyClosed": False,
                 "scrapedAt": "",
