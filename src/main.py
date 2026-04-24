@@ -14,12 +14,12 @@ import logging
 import os
 from datetime import datetime, timezone
 
-import httpx
 from apify import Actor
+from curl_cffi.requests import AsyncSession
 
 from .models import OutputView, ScraperInput
 from .scraper import GoogleMapsScraper
-from .utils import RateLimiter
+from .utils import IMPERSONATE, RateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,11 @@ async def main() -> None:
 
         await Actor.set_status_message("Connecting to Google Maps...")
 
-        async with httpx.AsyncClient(proxy=proxy_url) as client:
+        session_kwargs = {"impersonate": IMPERSONATE}
+        if proxy_url:
+            session_kwargs["proxies"] = {"https": proxy_url, "http": proxy_url}
+
+        async with AsyncSession(**session_kwargs) as client:
             rate_limiter = RateLimiter()
             scraper = GoogleMapsScraper(
                 client, rate_limiter, config, proxy_config=proxy_config,

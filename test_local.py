@@ -12,11 +12,11 @@ import asyncio
 import json
 import logging
 
-import httpx
+from curl_cffi.requests import AsyncSession
 
 from src.models import ScraperInput
 from src.scraper import GoogleMapsScraper
-from src.utils import RateLimiter
+from src.utils import IMPERSONATE, RateLimiter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ async def test_search() -> None:
         enrich_linkedin=True,
     )
 
-    async with httpx.AsyncClient() as client:
+    async with AsyncSession(impersonate=IMPERSONATE) as client:
         rate_limiter = RateLimiter(interval=2.0)
         scraper = GoogleMapsScraper(client, rate_limiter, config)
 
@@ -64,7 +64,7 @@ async def test_batch() -> None:
         max_reviews_per_place=0,
     )
 
-    async with httpx.AsyncClient() as client:
+    async with AsyncSession(impersonate=IMPERSONATE) as client:
         rate_limiter = RateLimiter(interval=2.0)
         scraper = GoogleMapsScraper(client, rate_limiter, config)
 

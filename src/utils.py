@@ -1,4 +1,11 @@
-"""Utility functions for rate limiting, retries, HTTP fetching, and proxy rotation."""
+"""Utility functions for rate limiting, retries, HTTP fetching, and geocoding.
+
+HTTP layer uses curl_cffi (libcurl-impersonate) instead of httpx so that our
+TLS handshake matches real Chrome. Google's Maps backend inspects the TLS
+fingerprint and serves a stripped, result-less response to clients whose
+fingerprint doesn't match a real browser — which is what was happening with
+plain httpx.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +15,8 @@ import logging
 import random
 from typing import Any
 
-import httpx
+import httpx  # kept for Nominatim geocoding (doesn't need impersonation)
+from curl_cffi.requests import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +30,9 @@ RETRY_BASE_DELAY = 5.0  # seconds
 
 BASE_URL = "https://www.google.com"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+
+# Chrome version curl_cffi will impersonate at the TLS layer
+IMPERSONATE = "chrome124"
 
 
 async def geocode_location(location: str) -> tuple[float, float] | None:
@@ -54,16 +65,6 @@ async def geocode_location(location: str) -> tuple[float, float] | None:
         logger.warning(f"Geocoding '{location}' failed: {e}")
         return None
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15",
-]
-
 
 class RateLimiter:
     """Async rate limiter enforcing a minimum interval between requests."""
@@ -83,47 +84,41 @@ class RateLimiter:
             self._last_request = asyncio.get_event_loop().time()
 
 
+# Kept minimal: curl_cffi's impersonate mode sets Chrome's User-Agent,
+# Accept, Accept-Language, Accept-Encoding, Sec-Ch-Ua-*, and Sec-Fetch-*
+# headers matching the impersonated version. Overriding them weakens the
+# impersonation, so we only add Referer and Cookie (session-specific).
+_CONSENT_COOKIE = (
+    "CONSENT=YES+cb.20240101-00-p0.en+FX+667; "
+    "SOCS=CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg; "
+    "NID=511=placeholder"
+)
+
+
 def get_headers(referer: str = "https://www.google.com/") -> dict[str, str]:
-    """Return headers that mimic a real browser navigation to Google Maps."""
-    return {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate",
-        "Connection": "keep-alive",
-        "Referer": referer,
-        "Sec-Ch-Ua": '"Chromium";v="134", "Google Chrome";v="134", "Not-A.Brand";v="99"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"Windows"',
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1",
-        # Bypass Google's cookie consent wall (EU/GDPR proxy IPs get this).
-        # CONSENT bypasses the legacy flow; SOCS bypasses the newer one.
-        "Cookie": "CONSENT=YES+cb.20240101-00-p0.en+FX+667; SOCS=CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg; NID=511=placeholder",
-    }
+    """Return minimal browser headers; curl_cffi fills the Chrome defaults."""
+    return {"Referer": referer, "Cookie": _CONSENT_COOKIE}
 
 
 def get_api_headers(referer: str = "https://www.google.com/maps") -> dict[str, str]:
     """Headers for XHR calls to Google Maps protobuf endpoints."""
     return {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate",
-        "Connection": "keep-alive",
         "Referer": referer,
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
+        "Cookie": _CONSENT_COOKIE,
         "X-Requested-With": "XMLHttpRequest",
     }
 
 
+def _make_proxy_session(proxy_url: str | None) -> AsyncSession:
+    """Build an AsyncSession configured with Chrome TLS impersonation."""
+    kwargs: dict[str, Any] = {"impersonate": IMPERSONATE}
+    if proxy_url:
+        kwargs["proxies"] = {"https": proxy_url, "http": proxy_url}
+    return AsyncSession(**kwargs)
+
+
 async def fetch_html(
-    client: httpx.AsyncClient,
+    client: AsyncSession,
     url: str,
     rate_limiter: RateLimiter,
     params: dict[str, Any] | None = None,
@@ -148,14 +143,14 @@ async def fetch_html(
     for attempt in range(MAX_RETRIES):
         await rate_limiter.wait()
 
-        active_client = client
-        temp_client: httpx.AsyncClient | None = None
+        active_client: AsyncSession = client
+        temp_client: AsyncSession | None = None
 
         # On retries, rotate to a fresh proxy IP to escape the block.
         if attempt > 0 and proxy_config is not None:
             try:
                 new_proxy_url = await proxy_config.new_url()
-                temp_client = httpx.AsyncClient(proxy=new_proxy_url)
+                temp_client = _make_proxy_session(new_proxy_url)
                 active_client = temp_client
                 logger.debug(f"Proxy rotated for retry {attempt + 1}/{MAX_RETRIES}")
             except Exception as e:
@@ -167,17 +162,15 @@ async def fetch_html(
                 params=params,
                 headers=get_api_headers(headers_ref) if api_request else get_headers(headers_ref),
                 timeout=30.0,
-                follow_redirects=True,
             )
 
             status = response.status_code
 
             if status == 200:
-                # Log when Google redirects us (e.g. to /maps home or consent)
-                if str(response.url) != str(response.request.url):
+                final_url = str(response.url)
+                if final_url and final_url.split("?")[0] != url.split("?")[0]:
                     logger.info(
-                        f"Redirected: {str(response.request.url)[:80]} "
-                        f"-> {str(response.url)[:120]}"
+                        f"Redirected: {url[:80]} -> {final_url[:120]}"
                     )
                 return response.text
 
@@ -210,28 +203,31 @@ async def fetch_html(
             logger.warning(f"Unexpected status {status} on {url[:100]}")
             return None
 
-        except httpx.TimeoutException:
+        except asyncio.TimeoutError:
             delay = 10.0 * (attempt + 1)
             logger.warning(f"Timeout — retrying in {delay}s ({attempt + 1}/{MAX_RETRIES})")
             await asyncio.sleep(delay)
             continue
 
-        except httpx.HTTPError as e:
+        except Exception as e:
             delay = 10.0 * (attempt + 1)
-            logger.warning(f"HTTP error {type(e).__name__}: {e} — retrying in {delay}s")
+            logger.warning(f"Request error {type(e).__name__}: {e} — retrying in {delay}s")
             await asyncio.sleep(delay)
             continue
 
         finally:
             if temp_client is not None:
-                await temp_client.aclose()
+                try:
+                    await temp_client.close()
+                except Exception:
+                    pass
 
     logger.error(f"All {MAX_RETRIES} retries exhausted for {url[:100]}")
     return None
 
 
 async def fetch_json(
-    client: httpx.AsyncClient,
+    client: AsyncSession,
     url: str,
     rate_limiter: RateLimiter,
     params: dict[str, Any] | None = None,
@@ -253,7 +249,6 @@ async def fetch_json(
     if text is None:
         return None
 
-    # Strip XSSI prefix and common wrapping
     body = text.lstrip()
     if body.startswith(")]}'"):
         body = body[4:].lstrip()
@@ -278,3 +273,10 @@ def safe_get(data: Any, *keys: int | str, default: Any = None) -> Any:
         if cur is None:
             return default
     return cur
+
+
+# Backwards-compat export: older code paths imported USER_AGENTS
+USER_AGENTS: list[str] = [
+    # Unused now that curl_cffi handles UA via impersonate, but keeping
+    # the name exported avoids breakage for any external reference.
+]

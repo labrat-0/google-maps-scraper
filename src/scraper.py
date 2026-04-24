@@ -23,11 +23,18 @@ from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import quote_plus, urlparse
 
-import httpx
 from bs4 import BeautifulSoup, Tag
+from curl_cffi.requests import AsyncSession
 
 from .models import OutputView, ScraperInput
-from .utils import BASE_URL, RateLimiter, fetch_html, geocode_location, safe_get
+from .utils import (
+    BASE_URL,
+    RateLimiter,
+    fetch_html,
+    geocode_location,
+    safe_get,
+    _make_proxy_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +68,7 @@ class GoogleMapsScraper:
 
     def __init__(
         self,
-        client: httpx.AsyncClient,
+        client: AsyncSession,
         rate_limiter: RateLimiter,
         config: ScraperInput,
         proxy_config: Any = None,
@@ -161,10 +168,13 @@ class GoogleMapsScraper:
                     break
                 try:
                     fresh_proxy = await self.proxy_config.new_url()
-                    async with httpx.AsyncClient(proxy=fresh_proxy) as rc:
+                    rc = _make_proxy_session(fresh_proxy)
+                    try:
                         html = await fetch_html(
                             rc, url, self.rate_limiter, params=params,
                         )
+                    finally:
+                        await rc.close()
                 except Exception as exc:
                     logger.warning(f"Proxy rotation failed: {exc}")
                     break
