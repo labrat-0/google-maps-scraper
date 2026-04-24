@@ -82,6 +82,12 @@
                 "description": "Thumbnail image URL from the Google Maps listing.",
                 "example": "https://lh5.googleusercontent.com/..."
             },
+            "images": {
+                "type": "array",
+                "description": "Google-hosted photo URLs from the place listing (up to 8).",
+                "items": { "type": "string" },
+                "example": ["https://lh5.googleusercontent.com/p/AF1Qip..."]
+            },
             "placeUrl": {
                 "type": "string",
                 "description": "Direct URL to the Google Maps place listing.",

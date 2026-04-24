@@ -257,15 +257,18 @@ class GoogleMapsScraper:
             place["searchKeywords"] = keywords
             place["searchLocation"] = location
 
-            # Enrich with place detail page only when needed:
-            # - place is missing name (came from fallback URL scan), OR
-            # - reviews or contacts are requested (require a detail-page fetch)
-            needs_detail = (
-                not place.get("name")
-                or self.config.max_reviews_per_place > 0
-                or self.config.enrich_contacts
-            )
-            if place.get("placeUrl") and needs_detail:
+            # Always enrich when a browser is available — gets phone, website,
+            # full address, opening hours, and images from the place detail page.
+            # Without browser, only enrich if name is missing or reviews needed.
+            if self.browser is not None:
+                needs_detail = bool(place.get("placeUrl"))
+            else:
+                needs_detail = (
+                    not place.get("name")
+                    or self.config.max_reviews_per_place > 0
+                    or self.config.enrich_contacts
+                )
+            if needs_detail:
                 place = await self._enrich_place_details(place)
 
             # Optional contact enrichment (email/social from website)
@@ -762,6 +765,7 @@ class GoogleMapsScraper:
                 "longitude": lng,
                 "openingHours": {},
                 "thumbnailUrl": "",
+                "images": [],
                 "placeUrl": full_url,
                 "permanentlyClosed": False,
                 "temporarilyClosed": False,
@@ -823,6 +827,7 @@ class GoogleMapsScraper:
                 "longitude": card.get("lng"),
                 "openingHours": {},
                 "thumbnailUrl": "",
+                "images": [],
                 "placeUrl": full_url,
                 "permanentlyClosed": False,
                 "temporarilyClosed": False,
@@ -932,34 +937,55 @@ class GoogleMapsScraper:
         self,
         place: dict[str, Any],
     ) -> dict[str, Any]:
-        """Fetch the place detail page to fill in missing fields + reviews."""
+        """Fill in phone, website, opening hours, images, and reviews.
+
+        Uses the browser (Playwright) when available — the JS extractor reads
+        stable data-item-id attributes from the detail panel, giving reliable
+        phone/website/hours/images without HTTP timeouts. Falls back to HTTP
+        when running without a browser.
+        """
         url = place.get("placeUrl", "")
         if not url:
             return place
 
-        html = await fetch_html(
-            self.client, url, self.rate_limiter,
-            proxy_config=self.proxy_config,
-            timeout=10.0,
-        )
-        if not html:
-            return place
+        html: str | None = None
 
-        # Parse APP_INIT from the place page (has richer record)
-        state = self._parse_app_init_state(html)
-        detail_record = safe_get(state, 3, 6)  # common location for place detail
-        if detail_record is None:
-            detail_record = self._find_place_record_in_state(state)
+        if self.browser is not None:
+            # Browser path: runs JS on the live page — far more reliable
+            detail, html = await self.browser.fetch_place_detail(url)
 
-        if detail_record:
-            enriched_from_state = self._entry_to_place([None] * 14 + [detail_record])
-            if enriched_from_state:
-                for key, val in enriched_from_state.items():
-                    if val and not place.get(key):
-                        place[key] = val
+            if detail.get("phone") and not place.get("phone"):
+                place["phone"] = detail["phone"]
+            if detail.get("website") and not place.get("website"):
+                place["website"] = detail["website"]
+            if detail.get("address") and not place.get("address"):
+                place["address"] = detail["address"]
+            if detail.get("openingHours"):
+                place["openingHours"] = detail["openingHours"]
+            if detail.get("images"):
+                place["images"] = detail["images"]
 
-        # Reviews from HTML (top N visible)
-        if self.config.max_reviews_per_place > 0:
+        else:
+            # HTTP fallback path (used when browser is unavailable)
+            html = await fetch_html(
+                self.client, url, self.rate_limiter,
+                proxy_config=self.proxy_config,
+                timeout=10.0,
+            )
+            if html:
+                state = self._parse_app_init_state(html)
+                detail_record = safe_get(state, 3, 6)
+                if detail_record is None:
+                    detail_record = self._find_place_record_in_state(state)
+                if detail_record:
+                    enriched = self._entry_to_place([None] * 14 + [detail_record])
+                    if enriched:
+                        for key, val in enriched.items():
+                            if val and not place.get(key):
+                                place[key] = val
+
+        # Reviews come from the rendered HTML regardless of path
+        if html and self.config.max_reviews_per_place > 0:
             reviews = self._extract_reviews_from_html(
                 html, self.config.max_reviews_per_place,
             )
@@ -967,12 +993,14 @@ class GoogleMapsScraper:
             if self.config.include_review_sentiment and reviews:
                 place["reviewSentiment"] = self._compute_review_sentiment(reviews)
 
-        # Lat/lng from URL if still missing
+        # Lat/lng from URL data params if still missing
         if place.get("latitude") is None:
-            m = LAT_LNG_RE.search(url)
+            m = re.search(r"!3d(-?\d+\.\d+)", url)
             if m:
                 place["latitude"] = float(m.group(1))
-                place["longitude"] = float(m.group(2))
+            m2 = re.search(r"!4d(-?\d+\.\d+)", url)
+            if m2:
+                place["longitude"] = float(m2.group(1))
 
         return place
 

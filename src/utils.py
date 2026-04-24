@@ -287,6 +287,75 @@ USER_AGENTS: list[str] = [
 ]
 
 
+# JavaScript that extracts structured data from a Google Maps place detail page.
+# Targets stable data-item-id attributes and aria-label patterns rather than
+# obfuscated CSS class names, so it survives most Google UI rollouts.
+_DETAIL_JS = """
+(function() {
+    var out = {phone: '', website: '', address: '', openingHours: {}, images: []};
+    try {
+        // Phone -------------------------------------------------------
+        var ph = document.querySelector('[data-item-id^="phone:tel:"]');
+        if (ph) {
+            out.phone = (ph.getAttribute('aria-label') || '')
+                        .replace(/^Phone:\\s*/i, '').trim();
+        }
+        if (!out.phone) {
+            var tel = document.querySelector('a[href^="tel:"]');
+            if (tel) out.phone = (tel.getAttribute('href') || '').replace('tel:', '').trim();
+        }
+
+        // Website ------------------------------------------------------
+        var ws = document.querySelector('a[data-item-id="authority"]');
+        if (ws) {
+            out.website = ws.href || '';
+        }
+        if (!out.website) {
+            var wBtn = document.querySelector('[aria-label^="Website:"]');
+            if (wBtn) out.website = (wBtn.getAttribute('aria-label') || '')
+                                     .replace(/^Website:\\s*/i, '').trim();
+        }
+
+        // Address ------------------------------------------------------
+        var addr = document.querySelector('[data-item-id="address"]');
+        if (addr) {
+            out.address = (addr.getAttribute('aria-label') || addr.textContent || '')
+                          .replace(/^Address:\\s*/i, '').trim();
+        }
+
+        // Opening hours — look for a <table> with 5+ rows (Mon–Sun + header)
+        var tables = document.querySelectorAll('table');
+        for (var t = 0; t < tables.length; t++) {
+            var rows = tables[t].querySelectorAll('tr');
+            var found = {};
+            for (var r = 0; r < rows.length; r++) {
+                var cells = rows[r].querySelectorAll('td');
+                if (cells.length >= 2) {
+                    var day  = cells[0].textContent.trim();
+                    var time = cells[1].textContent.trim().replace(/\\s+/g, ' ');
+                    if (day && time && day.length < 12) found[day] = time;
+                }
+            }
+            if (Object.keys(found).length >= 5) { out.openingHours = found; break; }
+        }
+
+        // Images — Google-hosted user photos have =s<N> size param in URL
+        var seenImg = {};
+        var imgs = document.querySelectorAll('img');
+        for (var i = 0; i < imgs.length && out.images.length < 8; i++) {
+            var src = imgs[i].src || '';
+            if (src && !seenImg[src] &&
+                src.indexOf('googleusercontent') >= 0 &&
+                src.indexOf('=s') >= 0) {
+                seenImg[src] = 1;
+                out.images.push(src);
+            }
+        }
+    } catch(e) {}
+    return JSON.stringify(out);
+})()
+"""
+
 # ------------------------------------------------------------------ #
 # Browser-based fetching (Playwright)                                 #
 # ------------------------------------------------------------------ #
@@ -618,6 +687,78 @@ class BrowserFetcher:
             logger.info(f"Scroll: max {max_scrolls} reached at {final} results")
         except Exception:
             pass
+
+    async def fetch_place_detail(self, url: str) -> tuple[dict, str | None]:
+        """Navigate to a place detail page and extract structured data via JS.
+
+        Returns (detail_dict, html_str). detail_dict contains phone, website,
+        address, openingHours, images. html_str is the page source and is used
+        for review extraction; it may be None if DOM access fails.
+        """
+        if self._context is None:
+            return {}, None
+
+        page = await self._context.new_page()
+
+        async def _route_detail(route: Any) -> None:
+            rtype = route.request.resource_type
+            if rtype in ("image", "font", "media"):
+                try:
+                    await route.abort()
+                except Exception:
+                    await route.continue_()
+            else:
+                await route.continue_()
+
+        try:
+            await page.route("**/*", _route_detail)
+        except Exception:
+            pass
+
+        detail: dict = {}
+        html: str | None = None
+
+        try:
+            try:
+                await page.goto(url, wait_until="commit", timeout=30000)
+            except Exception as e:
+                logger.debug(f"Detail goto: {e}")
+
+            # Wait for the detail panel — data-item-id attributes appear once
+            # Google Maps JS renders the place info sidebar.
+            try:
+                await page.wait_for_selector("[data-item-id]", timeout=15000)
+            except Exception:
+                pass
+
+            await asyncio.sleep(1.0)
+
+            try:
+                raw = await asyncio.wait_for(
+                    page.evaluate(_DETAIL_JS), timeout=8
+                )
+                if raw:
+                    detail = json.loads(raw)
+            except Exception as e:
+                logger.debug(f"Detail JS eval failed: {e}")
+
+            try:
+                html = await asyncio.wait_for(
+                    page.evaluate("document.documentElement.outerHTML"),
+                    timeout=8,
+                )
+            except Exception:
+                pass
+
+        except Exception as e:
+            logger.warning(f"fetch_place_detail failed for {url[:80]}: {e}")
+        finally:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+        return detail, html
 
     async def close(self) -> None:
         """Tear down browser + playwright."""
