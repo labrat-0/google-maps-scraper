@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import random
 from typing import Any
 from urllib.parse import urlparse
@@ -301,6 +302,49 @@ USER_AGENTS: list[str] = [
 # rendered HTML back to our existing regex/FID-scan extractors.
 
 
+# JavaScript that reads place cards directly from the search results feed.
+# Runs inside the browser after scrolling so it only sees actual result cards
+# (not ads or sidebar panels that pollute the full-page HTML regex approach).
+# Uses string-indexOf instead of regex to avoid Python escaping headaches.
+_EXTRACT_PLACES_JS = """
+(function() {
+    try {
+        function getParam(href, prefix) {
+            var idx = href.indexOf(prefix);
+            if (idx < 0) return '';
+            var s = idx + prefix.length;
+            var e = href.indexOf('!', s);
+            return e < 0 ? href.slice(s) : href.slice(s, e);
+        }
+        var feed = document.querySelector('div[role="feed"]');
+        if (!feed) return '[]';
+        var seen = {};
+        var out = [];
+        var links = feed.querySelectorAll('a[href*="/maps/place/"]');
+        for (var i = 0; i < links.length; i++) {
+            var a = links[i];
+            var href = a.getAttribute('href') || '';
+            if (!href || seen[href]) continue;
+            seen[href] = 1;
+            var latStr  = getParam(href, '!3d');
+            var lngStr  = getParam(href, '!4d');
+            var placeId = getParam(href, '!19s');
+            var cid     = getParam(href, '!1s');
+            out.push({
+                href:       href,
+                text:       (a.innerText || a.textContent || '').trim(),
+                ariaLabel:  (a.getAttribute('aria-label') || '').trim(),
+                lat:        latStr ? parseFloat(latStr) : null,
+                lng:        lngStr ? parseFloat(lngStr) : null,
+                placeId:    (placeId.indexOf('ChIJ') === 0) ? placeId : '',
+                cid:        (cid.indexOf('0x') === 0) ? cid : ''
+            });
+        }
+        return JSON.stringify(out);
+    } catch(e) { return '[]'; }
+})()
+"""
+
 _BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -337,6 +381,7 @@ class BrowserFetcher:
         self._playwright: Any = None
         self._browser: Any = None
         self._context: Any = None
+        self.last_extracted_places: list[dict] = []
 
     async def start(self) -> None:
         """Launch Chromium and create a reusable context."""
@@ -447,10 +492,27 @@ class BrowserFetcher:
                     page.evaluate("document.documentElement.outerHTML"),
                     timeout=10,
                 )
-                return html
             except Exception as e:
                 logger.warning(f"DOM extract failed on {url[:80]}: {e}")
+                self.last_extracted_places = []
                 return None
+
+            # Extract structured place data directly from the feed DOM.
+            # This runs BEFORE closing the page so it sees the live card state.
+            try:
+                raw = await asyncio.wait_for(
+                    page.evaluate(_EXTRACT_PLACES_JS),
+                    timeout=8,
+                )
+                self.last_extracted_places = json.loads(raw) if raw else []
+                logger.info(
+                    f"JS feed extraction: {len(self.last_extracted_places)} cards"
+                )
+            except Exception as e:
+                logger.debug(f"JS place extraction failed: {e}")
+                self.last_extracted_places = []
+
+            return html
         except Exception as e:
             logger.warning(f"Browser fetch failed for {url[:80]}: {e}")
             return None

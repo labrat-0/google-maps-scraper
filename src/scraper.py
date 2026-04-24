@@ -215,8 +215,20 @@ class GoogleMapsScraper:
             if places:
                 break
 
-            # HTML regex fallback runs on the RENDERED DOM — after JS, the
-            # result sidebar contains many /maps/place/ anchors we can harvest.
+            # JS feed extraction: Playwright read place cards directly from
+            # div[role="feed"] — only actual results, not ads or sidebar panels.
+            # Gives name, rating, category, address without any HTTP round-trips.
+            if self.browser is not None and self.browser.last_extracted_places:
+                js_places = self._parse_js_places(self.browser.last_extracted_places)
+                if js_places:
+                    places = js_places
+                    logger.info(
+                        f"JS feed extraction yielded {len(js_places)} places"
+                    )
+                    break
+
+            # Last-ditch HTML regex on the full rendered DOM — prone to picking
+            # up off-location ads; kept only as final safety net.
             html_places = self._fallback_extract_from_html(html)
             if html_places:
                 places = html_places
@@ -759,6 +771,158 @@ class GoogleMapsScraper:
                 break
         logger.info(f"Fallback HTML scan found {len(places)} place URLs")
         return places
+
+    # ------------------------------------------------------------------ #
+    # JS feed extraction helpers                                         #
+    # ------------------------------------------------------------------ #
+
+    def _parse_js_places(
+        self,
+        js_cards: list[dict],
+    ) -> list[dict[str, Any]]:
+        """Convert JS-extracted feed card dicts into standard place dicts."""
+        places: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for card in js_cards:
+            href = card.get("href", "")
+            if not href or href in seen:
+                continue
+            seen.add(href)
+
+            # Name: prefer decoded URL path segment, fall back to first text line
+            name_m = re.search(r"/maps/place/([^/@?+\s][^/@?]*)", href)
+            if name_m:
+                name = unquote_plus(name_m.group(1)).strip()
+            else:
+                name = (card.get("text", "").split("\n")[0] or "").strip()
+
+            card_fields = self._parse_card_text(
+                card.get("text", ""),
+                card.get("ariaLabel", ""),
+                name,
+            )
+
+            full_url = (
+                f"{BASE_URL}{href}" if href.startswith("/") else href
+            )
+
+            places.append({
+                "placeId": card.get("placeId", ""),
+                "googleCid": card.get("cid", ""),
+                "name": name,
+                "address": card_fields["address"],
+                "categories": card_fields["categories"],
+                "categoryMain": card_fields["categoryMain"],
+                "rating": card_fields["rating"],
+                "reviewCount": card_fields["reviewCount"],
+                "phone": "",
+                "website": "",
+                "priceLevel": card_fields["priceLevel"],
+                "latitude": card.get("lat"),
+                "longitude": card.get("lng"),
+                "openingHours": {},
+                "thumbnailUrl": "",
+                "placeUrl": full_url,
+                "permanentlyClosed": False,
+                "temporarilyClosed": False,
+                "scrapedAt": "",
+            })
+
+        return places
+
+    def _parse_card_text(
+        self,
+        text: str,
+        aria_label: str,
+        name: str,
+    ) -> dict[str, Any]:
+        """Parse rating, reviewCount, category, address from card text/aria-label."""
+        result: dict[str, Any] = {
+            "rating": None,
+            "reviewCount": 0,
+            "categoryMain": "",
+            "categories": [],
+            "address": "",
+            "priceLevel": None,
+        }
+
+        # aria-label is the most structured source: "Name 4.5 stars 1,234 reviews …"
+        if aria_label:
+            m = re.search(r"(\d+\.\d+)\s+star", aria_label, re.IGNORECASE)
+            if m:
+                result["rating"] = float(m.group(1))
+            m = re.search(r"([\d,]+)\s+review", aria_label, re.IGNORECASE)
+            if m:
+                result["reviewCount"] = int(m.group(1).replace(",", ""))
+
+        # Split on newlines and middle-dot separators Google uses in cards
+        lines = [
+            l.strip()
+            for l in re.split(r"[\n·•]", text)
+            if l.strip() and l.strip() != name
+        ]
+
+        category_candidates: list[str] = []
+        for line in lines:
+            line = line.strip("() ")
+            if not line:
+                continue
+
+            # Rating: bare float "4.5"
+            if re.match(r"^\d\.\d$", line):
+                if result["rating"] is None:
+                    try:
+                        result["rating"] = float(line)
+                    except ValueError:
+                        pass
+                continue
+
+            # Review count: bare integer "(1,234)" or "1,234"
+            if re.match(r"^\(?([\d,]+)\)?$", line):
+                if not result["reviewCount"]:
+                    try:
+                        result["reviewCount"] = int(
+                            line.strip("()").replace(",", "")
+                        )
+                    except ValueError:
+                        pass
+                continue
+
+            # Price level: dollar signs only
+            if re.match(r"^\${1,4}$", line):
+                result["priceLevel"] = line
+                continue
+
+            # Skip hours/open-closed status lines
+            if re.search(
+                r"\b(open|closed|closes|opens|hours)\b", line, re.IGNORECASE
+            ):
+                continue
+
+            if len(line) < 2 or len(line) > 120:
+                continue
+
+            # Address: has a digit AND a street-type word
+            if re.search(r"\d", line) and re.search(
+                r"\b(St|Ave|Blvd|Rd|Dr|Ln|Way|Ct|Hwy|Pkwy|Pl|"
+                r"Ter|Cir|Loop|Expy|Fwy|Beltway|NW|NE|SW|SE)\b",
+                line,
+                re.IGNORECASE,
+            ):
+                if not result["address"]:
+                    result["address"] = line
+                continue
+
+            # Category candidate: starts with a letter, no digits
+            if re.match(r"^[A-Za-z]", line) and not re.search(r"\d", line):
+                category_candidates.append(line)
+
+        if category_candidates:
+            result["categoryMain"] = category_candidates[0]
+            result["categories"] = category_candidates[:3]
+
+        return result
 
     # ------------------------------------------------------------------ #
     # Place detail enrichment                                            #
