@@ -433,8 +433,11 @@ class GoogleMapsScraper:
         """
         places: list[dict[str, Any]] = []
 
+        # Return empty when state is missing — the outer loop will try the
+        # JS feed extraction (which reads the actual rendered DOM cards)
+        # before falling back to the HTML URL regex.
         if not state:
-            return self._fallback_extract_from_html(raw_html)
+            return places
 
         # state[3] is often a list of length 2 where one element is the
         # XSSI-prefixed results JSON. Try direct indices first (matches
@@ -486,13 +489,13 @@ class GoogleMapsScraper:
             )
             return fid_places
 
-        # Nothing worked — log and fall back to HTML scan
+        # Nothing worked. Don't fallback here — let the outer loop try
+        # the JS feed extraction first (which has real card data) before
+        # the dumber HTML regex fallback.
         logger.warning(
             f"State parsed but no places found. "
             f"Top-level shape: {self._describe_state(state)}"
         )
-        places = self._fallback_extract_from_html(raw_html)
-
         return places
 
     def _extract_places_by_fid_scan(self, parsed: Any) -> list[dict[str, Any]]:
@@ -984,8 +987,13 @@ class GoogleMapsScraper:
         html: str | None = None
 
         if self.browser is not None:
-            # Browser path: runs JS on the live page — far more reliable
-            detail, html = await self.browser.fetch_place_detail(url)
+            # Browser path: runs JS on the live page — far more reliable.
+            # Only pull outerHTML when reviews are requested (for regex
+            # parsing); skipping it shaves ~1-2s per place.
+            need_html = self.config.max_reviews_per_place > 0
+            detail, html = await self.browser.fetch_place_detail(
+                url, need_html=need_html
+            )
 
             if detail.get("phone") and not place.get("phone"):
                 place["phone"] = detail["phone"]

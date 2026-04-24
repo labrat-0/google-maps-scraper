@@ -88,11 +88,18 @@ async def main() -> None:
             f"searches={len(combos)} | batch_mode={batch_mode} | "
             f"direct_urls={len(config.place_urls)} | "
             f"reviews={config.max_reviews_per_place} | "
+            f"details={config.enrich_details} | "
             f"contacts={config.enrich_contacts} | "
             f"linkedin={config.enrich_linkedin} | "
             f"output_view={config.output_view.value} | "
             f"max_results={config.max_results}"
         )
+        if config.enrich_details:
+            Actor.log.info(
+                "Detail enrichment ON — each place takes ~8-10s for a full "
+                "detail page load. Expect total run time ≈ max_results * 10s. "
+                "Increase the actor timeout under Run options if needed."
+            )
 
         # 3. Proxy setup. RESIDENTIAL is required — the browser (Playwright)
         # needs HTTPS CONNECT tunneling, which GOOGLE_SERP does NOT support

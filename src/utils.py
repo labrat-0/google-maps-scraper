@@ -720,12 +720,16 @@ class BrowserFetcher:
         except Exception:
             pass
 
-    async def fetch_place_detail(self, url: str) -> tuple[dict, str | None]:
+    async def fetch_place_detail(
+        self,
+        url: str,
+        need_html: bool = False,
+    ) -> tuple[dict, str | None]:
         """Navigate to a place detail page and extract structured data via JS.
 
-        Returns (detail_dict, html_str). detail_dict contains phone, website,
-        address, openingHours, images. html_str is the page source and is used
-        for review extraction; it may be None if DOM access fails.
+        Returns (detail_dict, html_str). When need_html is False (default),
+        html is None — skip the outerHTML evaluation for speed. Enable only
+        when the caller will parse reviews from raw HTML.
         """
         if self._context is None:
             return {}, None
@@ -752,35 +756,38 @@ class BrowserFetcher:
 
         try:
             try:
-                await page.goto(url, wait_until="commit", timeout=30000)
+                # 15s goto is plenty — Google Maps detail pages commit fast.
+                await page.goto(url, wait_until="commit", timeout=15000)
             except Exception as e:
                 logger.debug(f"Detail goto: {e}")
 
-            # Wait for the detail panel — data-item-id attributes appear once
-            # Google Maps JS renders the place info sidebar.
+            # 6s selector wait — the data-item-id attributes appear in <2s
+            # normally; anything slower is likely a soft-block and we cut
+            # losses rather than waiting the old 15s.
             try:
-                await page.wait_for_selector("[data-item-id]", timeout=15000)
+                await page.wait_for_selector("[data-item-id]", timeout=6000)
             except Exception:
                 pass
 
-            await asyncio.sleep(1.0)
-
             try:
                 raw = await asyncio.wait_for(
-                    page.evaluate(_DETAIL_JS), timeout=8
+                    page.evaluate(_DETAIL_JS), timeout=5
                 )
                 if raw:
                     detail = json.loads(raw)
             except Exception as e:
                 logger.debug(f"Detail JS eval failed: {e}")
 
-            try:
-                html = await asyncio.wait_for(
-                    page.evaluate("document.documentElement.outerHTML"),
-                    timeout=8,
-                )
-            except Exception:
-                pass
+            # Only evaluate outerHTML when caller needs it (review extraction).
+            # Skipping this saves 1-2s per place on a fast path.
+            if need_html:
+                try:
+                    html = await asyncio.wait_for(
+                        page.evaluate("document.documentElement.outerHTML"),
+                        timeout=6,
+                    )
+                except Exception:
+                    pass
 
         except Exception as e:
             logger.warning(f"fetch_place_detail failed for {url[:80]}: {e}")
