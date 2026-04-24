@@ -88,10 +88,12 @@ class RateLimiter:
 # Accept, Accept-Language, Accept-Encoding, Sec-Ch-Ua-*, and Sec-Fetch-*
 # headers matching the impersonated version. Overriding them weakens the
 # impersonation, so we only add Referer and Cookie (session-specific).
+# Only consent-bypass cookies — NID is a session-signed Google cookie and
+# a fake value flags the request as non-browser. Let curl_cffi's AsyncSession
+# acquire a real NID via the warmup request before searching.
 _CONSENT_COOKIE = (
     "CONSENT=YES+cb.20240101-00-p0.en+FX+667; "
-    "SOCS=CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg; "
-    "NID=511=placeholder"
+    "SOCS=CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg"
 )
 
 

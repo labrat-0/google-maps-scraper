@@ -44,6 +44,8 @@ APP_INIT_STATE_RE = re.compile(
     re.DOTALL,
 )
 CID_RE = re.compile(r"0x[0-9a-fA-F]+:0x[0-9a-fA-F]+")
+# Modern Google Place ID format, used alongside or instead of legacy FIDs
+PLACE_ID_RE = re.compile(r"ChIJ[A-Za-z0-9_-]{20,27}")
 PLACE_URL_RE = re.compile(r"/maps/place/[^/?\s\"'<>]+(?:/@[\-\d.,]+[^/?\s\"'<>]*)?(?:/data=[^?\s\"'<>]+)?")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 PHONE_RE = re.compile(r"\+?[\d][\d\s().\-]{7,}")
@@ -81,13 +83,46 @@ class GoogleMapsScraper:
         self._seen_cids: set[str] = set()
         self._website_cache: dict[str, dict[str, Any]] = {}
         self._geocode_cache: dict[str, tuple[float, float] | None] = {}
+        self._session_warmed: bool = False
 
     # ------------------------------------------------------------------ #
     # Public entry point                                                 #
     # ------------------------------------------------------------------ #
 
+    async def _warmup_session(self) -> None:
+        """Prime the AsyncSession with real Google cookies (NID, etc.).
+
+        A cold session hitting /maps/search/ directly with fake/placeholder
+        cookies gets flagged by Google's bot detection and served a result-
+        less shell response. Visiting /maps/ first is what a real browser
+        does on a cold tab — Google responds with Set-Cookie for NID and
+        friends, which curl_cffi's AsyncSession retains and reuses for
+        subsequent search requests, passing the browser-likeness check.
+        """
+        if self._session_warmed:
+            return
+        self._session_warmed = True
+        try:
+            logger.info("Warming session at https://www.google.com/maps/")
+            await self.client.get(
+                f"{BASE_URL}/maps/",
+                headers={"Referer": "https://www.google.com/"},
+                timeout=15.0,
+            )
+            # Also hit the search home to get search-specific cookies
+            await self.client.get(
+                f"{BASE_URL}/maps/search/",
+                headers={"Referer": f"{BASE_URL}/maps/"},
+                timeout=15.0,
+            )
+        except Exception as e:
+            logger.warning(f"Session warmup failed: {e} — continuing anyway")
+
     async def scrape(self) -> AsyncIterator[dict[str, Any]]:
         """Main dispatcher — runs all search combos and direct URL fetches."""
+        # Warm the session once so Google sets real NID/session cookies
+        await self._warmup_session()
+
         # Mode 1: direct place URLs
         if self.config.place_urls:
             for url in self.config.place_urls:
@@ -429,12 +464,12 @@ class GoogleMapsScraper:
         return places
 
     def _extract_places_by_fid_scan(self, parsed: Any) -> list[dict[str, Any]]:
-        """Scan the serialized parsed JSON for Google feature IDs.
+        """Scan the serialized parsed JSON for Google place identifiers.
 
-        Every Maps place has a FID of the form `0xHEX:0xHEX` embedded in
-        the response. When structural extraction fails, we can still
-        discover places by this pattern and build minimal records that
-        the detail-page fetcher will enrich.
+        Maps places appear as either legacy FIDs (`0xHEX:0xHEX`) or modern
+        Place IDs (`ChIJ...`). When structural extraction fails, we can
+        still discover places by these patterns and build minimal records
+        that the detail-page fetcher will enrich.
         """
         try:
             blob = json.dumps(parsed)
@@ -442,12 +477,13 @@ class GoogleMapsScraper:
             return []
 
         fids = list(dict.fromkeys(CID_RE.findall(blob)))  # preserve order, dedupe
-        if not fids:
+        place_ids = list(dict.fromkeys(PLACE_ID_RE.findall(blob)))
+
+        if not fids and not place_ids:
             return []
 
         places: list[dict[str, Any]] = []
         for fid in fids:
-            # Second hex of the FID is the decimal CID when converted
             try:
                 cid_decimal = str(int(fid.split(":")[1], 16))
             except (ValueError, IndexError):
@@ -462,6 +498,13 @@ class GoogleMapsScraper:
                 "googleCid": fid,
                 "name": "",
                 "placeUrl": place_url,
+            })
+        for pid in place_ids:
+            places.append({
+                "placeId": pid,
+                "googleCid": "",
+                "name": "",
+                "placeUrl": f"{BASE_URL}/maps/place/?q=place_id:{pid}",
             })
         return places
 
