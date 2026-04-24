@@ -14,6 +14,7 @@ import json
 import logging
 import random
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx  # kept for Nominatim geocoding (doesn't need impersonation)
 from curl_cffi.requests import AsyncSession
@@ -282,3 +283,151 @@ USER_AGENTS: list[str] = [
     # Unused now that curl_cffi handles UA via impersonate, but keeping
     # the name exported avoids breakage for any external reference.
 ]
+
+
+# ------------------------------------------------------------------ #
+# Browser-based fetching (Playwright)                                 #
+# ------------------------------------------------------------------ #
+#
+# Google Maps is a pure-JS SPA: the initial HTML response contains only
+# a shell (query echo + viewport metadata) with no place data. Results
+# are populated into the DOM by JS running XHR calls. HTTP-only clients
+# never see those populated results no matter how well they fake a
+# browser's TLS, cookies, or headers — nothing triggers the XHRs.
+#
+# Playwright launches a real Chromium, navigates to the search URL,
+# waits for result elements to appear in the DOM, then hands the
+# rendered HTML back to our existing regex/FID-scan extractors.
+
+
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def _parse_proxy_for_playwright(proxy_url: str | None) -> dict[str, str] | None:
+    """Convert an Apify proxy URL into Playwright's proxy dict shape."""
+    if not proxy_url:
+        return None
+    try:
+        u = urlparse(proxy_url)
+        server = f"{u.scheme or 'http'}://{u.hostname}:{u.port}"
+        return {
+            "server": server,
+            "username": u.username or "",
+            "password": u.password or "",
+        }
+    except Exception as e:
+        logger.warning(f"Failed to parse proxy URL for Playwright: {e}")
+        return None
+
+
+class BrowserFetcher:
+    """Playwright-backed HTML fetcher for JS-rendered pages.
+
+    Starts a single Chromium + context and reuses it across fetches.
+    A new page is opened per request so navigation state stays clean.
+    Call `start()` before first `fetch()` and `close()` at shutdown.
+    """
+
+    def __init__(self, proxy_url: str | None = None) -> None:
+        self.proxy_url = proxy_url
+        self._playwright: Any = None
+        self._browser: Any = None
+        self._context: Any = None
+
+    async def start(self) -> None:
+        """Launch Chromium and create a reusable context."""
+        from playwright.async_api import async_playwright
+
+        self._playwright = await async_playwright().start()
+
+        launch_kwargs: dict[str, Any] = {
+            "headless": True,
+            "args": [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+            ],
+        }
+        proxy_cfg = _parse_proxy_for_playwright(self.proxy_url)
+        if proxy_cfg:
+            launch_kwargs["proxy"] = proxy_cfg
+
+        self._browser = await self._playwright.chromium.launch(**launch_kwargs)
+        self._context = await self._browser.new_context(
+            user_agent=_BROWSER_UA,
+            locale="en-US",
+            viewport={"width": 1280, "height": 900},
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        # Bypass consent wall upfront instead of waiting for Google to redirect
+        await self._context.add_cookies([
+            {
+                "name": "CONSENT",
+                "value": "YES+cb.20240101-00-p0.en+FX+667",
+                "domain": ".google.com",
+                "path": "/",
+            },
+            {
+                "name": "SOCS",
+                "value": "CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg",
+                "domain": ".google.com",
+                "path": "/",
+            },
+        ])
+        logger.info("Browser context ready (Playwright + Chromium)")
+
+    async def fetch(
+        self,
+        url: str,
+        wait_selector: str = 'a[href*="/maps/place/"]',
+        timeout_ms: int = 25000,
+    ) -> str | None:
+        """Navigate to URL, wait for result DOM to populate, return rendered HTML."""
+        if self._context is None:
+            logger.error("BrowserFetcher.fetch called before start()")
+            return None
+
+        page = await self._context.new_page()
+        try:
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            except Exception as e:
+                logger.warning(f"Browser navigation issue on {url[:80]}: {e}")
+
+            try:
+                await page.wait_for_selector(wait_selector, timeout=timeout_ms)
+            except Exception:
+                # Result selector didn't appear — still return whatever DOM we have
+                logger.info(
+                    f"Result selector '{wait_selector}' did not appear within "
+                    f"{timeout_ms}ms on {url[:80]} — returning current DOM"
+                )
+
+            return await page.content()
+        except Exception as e:
+            logger.warning(f"Browser fetch failed for {url[:80]}: {e}")
+            return None
+        finally:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+    async def close(self) -> None:
+        """Tear down browser + playwright."""
+        try:
+            if self._context is not None:
+                await self._context.close()
+            if self._browser is not None:
+                await self._browser.close()
+            if self._playwright is not None:
+                await self._playwright.stop()
+        except Exception as e:
+            logger.debug(f"BrowserFetcher close error: {e}")
+        self._context = self._browser = self._playwright = None

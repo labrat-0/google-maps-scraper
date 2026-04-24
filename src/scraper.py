@@ -29,6 +29,7 @@ from curl_cffi.requests import AsyncSession
 from .models import OutputView, ScraperInput
 from .utils import (
     BASE_URL,
+    BrowserFetcher,
     RateLimiter,
     fetch_html,
     geocode_location,
@@ -74,11 +75,13 @@ class GoogleMapsScraper:
         rate_limiter: RateLimiter,
         config: ScraperInput,
         proxy_config: Any = None,
+        browser: BrowserFetcher | None = None,
     ) -> None:
         self.client = client
         self.rate_limiter = rate_limiter
         self.config = config
         self.proxy_config = proxy_config
+        self.browser = browser
         self._seen_place_ids: set[str] = set()
         self._seen_cids: set[str] = set()
         self._website_cache: dict[str, dict[str, Any]] = {}
@@ -185,47 +188,48 @@ class GoogleMapsScraper:
 
         params = {"hl": self.config.language}
 
-        # Content-level retry: rotate proxy AND URL format per attempt.
+        # Fetch via real browser so JS runs and populates search results
+        # into the DOM. Iterate URL variants if the first doesn't yield
+        # extractable results (Google sometimes treats variants differently).
         html: str | None = None
         state: Any = None
         places: list[dict[str, Any]] = []
-        for attempt in range(3):
-            url = url_variants[attempt % len(url_variants)]
-            logger.info(f"Attempt {attempt + 1}/3: {url[:120]}")
+        max_attempts = len(url_variants)
 
-            if attempt == 0:
+        for attempt in range(max_attempts):
+            url = url_variants[attempt]
+            logger.info(f"Attempt {attempt + 1}/{max_attempts}: {url[:120]}")
+
+            if self.browser is not None:
+                html = await self.browser.fetch(url)
+            else:
+                # Fallback to HTTP fetch (local testing without browser)
                 html = await fetch_html(
                     self.client, url, self.rate_limiter,
                     params=params, proxy_config=self.proxy_config,
                 )
-            else:
-                if self.proxy_config is None:
-                    break
-                try:
-                    fresh_proxy = await self.proxy_config.new_url()
-                    rc = _make_proxy_session(fresh_proxy)
-                    try:
-                        html = await fetch_html(
-                            rc, url, self.rate_limiter, params=params,
-                        )
-                    finally:
-                        await rc.close()
-                except Exception as exc:
-                    logger.warning(f"Proxy rotation failed: {exc}")
-                    break
 
             if not html:
                 logger.warning(f"No HTML returned for search: {query}")
                 continue
 
+            # Structural extraction first — browser-rendered pages often still
+            # have APP_INITIALIZATION_STATE populated after JS runs.
             state = self._parse_app_init_state(html)
             places = self._extract_places_from_state(state, html)
             if places:
-                break  # got results — done
+                break
+
+            # HTML regex fallback runs on the RENDERED DOM — after JS, the
+            # result sidebar contains many /maps/place/ anchors we can harvest.
+            html_places = self._fallback_extract_from_html(html)
+            if html_places:
+                places = html_places
+                break
 
             logger.warning(
-                f"0 places extracted on attempt {attempt + 1}/3 "
-                f"(state={'present' if state is not None else 'missing'}) — will rotate proxy"
+                f"0 places extracted on attempt {attempt + 1}/{max_attempts} — "
+                "trying next URL variant"
             )
 
         logger.info(f"Extracted {len(places)} raw place entries for '{query}'")

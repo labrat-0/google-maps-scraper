@@ -19,7 +19,7 @@ from curl_cffi.requests import AsyncSession
 
 from .models import OutputView, ScraperInput
 from .scraper import GoogleMapsScraper
-from .utils import IMPERSONATE, RateLimiter
+from .utils import IMPERSONATE, BrowserFetcher, RateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -113,14 +113,29 @@ async def main() -> None:
 
         await Actor.set_status_message("Connecting to Google Maps...")
 
-        session_kwargs = {"impersonate": IMPERSONATE}
+        session_kwargs: dict = {"impersonate": IMPERSONATE}
         if proxy_url:
             session_kwargs["proxies"] = {"https": proxy_url, "http": proxy_url}
+
+        # Browser is used for the search fetch (Google Maps requires JS to
+        # populate result data). HTTP via curl_cffi is still used for place
+        # detail pages, website enrichment, etc. — those work fine over HTTP.
+        browser = BrowserFetcher(proxy_url=proxy_url)
+        try:
+            await browser.start()
+        except Exception as e:
+            Actor.log.error(
+                f"Failed to start browser: {e}. Falling back to HTTP-only mode "
+                "(results are unlikely — Google Maps search requires JS).",
+            )
+            browser = None
 
         async with AsyncSession(**session_kwargs) as client:
             rate_limiter = RateLimiter()
             scraper = GoogleMapsScraper(
-                client, rate_limiter, config, proxy_config=proxy_config,
+                client, rate_limiter, config,
+                proxy_config=proxy_config,
+                browser=browser,
             )
 
             count = state["scraped"]
@@ -190,6 +205,10 @@ async def main() -> None:
                     Actor.log.error(f"Scraping error: {e}")
                 if batch:
                     await Actor.push_data(batch)
+
+        # Close browser now that scraping is done
+        if browser is not None:
+            await browser.close()
 
         # 5. Final status
         msg = (
