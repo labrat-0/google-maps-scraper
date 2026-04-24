@@ -167,14 +167,14 @@
         },
         "proxyConfiguration": {
             "sectionCaption": "🌐 Proxy Configuration",
-            "sectionDescription": "Google Maps blocks most datacenter IPs. Residential proxies are strongly recommended for reliable results at scale.",
+            "sectionDescription": "Google Maps blocks most IPs, including datacenter and many residential. Apify's GOOGLE_SERP proxy group is specifically designed to bypass Google's detection and is strongly recommended.",
             "title": "🔒 Proxy Configuration",
             "type": "object",
-            "description": "Proxy settings. RESIDENTIAL group gives the best success rate — without it, Google may serve CAPTCHAs or 429s.",
+            "description": "Proxy settings. GOOGLE_SERP group is optimized for scraping Google and gives the highest success rate. Falls back to RESIDENTIAL if GOOGLE_SERP is unavailable on your Apify plan.",
             "editor": "proxy",
             "prefill": {
                 "useApifyProxy": true,
-                "apifyProxyGroups": ["RESIDENTIAL"]
+                "apifyProxyGroups": ["GOOGLE_SERP"]
             }
         }
     },

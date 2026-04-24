@@ -76,36 +76,27 @@ async def main() -> None:
             f"max_results={config.max_results}"
         )
 
-        # 3. Proxy setup — force US country to avoid GDPR consent pages
+        # 3. Proxy setup. GOOGLE_SERP is the recommended group (auto-selects
+        # IPs that bypass Google's bot detection); country_code is skipped
+        # because GOOGLE_SERP handles region selection internally and the
+        # combination can be rejected by Apify.
         proxy_config = None
         proxy_url = None
         try:
             proxy_config = await Actor.create_proxy_configuration(
                 actor_proxy_input=raw_input.get("proxyConfiguration"),
-                # Force US-origin IPs: non-US IPs often get Google's consent wall
-                # which returns a 200 with no MAP data instead of real results.
-                country_code="US",
             )
             if proxy_config:
                 proxy_url = await proxy_config.new_url()
         except Exception as e:
-            # country_code might not be supported with all proxy configs — retry without
-            Actor.log.warning(f"Proxy setup with US country failed ({e}), retrying without country filter")
-            try:
-                proxy_config = await Actor.create_proxy_configuration(
-                    actor_proxy_input=raw_input.get("proxyConfiguration"),
-                )
-                if proxy_config:
-                    proxy_url = await proxy_config.new_url()
-            except Exception as e2:
-                Actor.log.warning(f"Failed to create proxy configuration: {e2}")
+            Actor.log.warning(f"Failed to create proxy configuration: {e}")
 
         if not proxy_url and is_on_apify:
             await Actor.fail(
                 status_message=(
                     "Proxy required. Google Maps blocks datacenter IPs. "
-                    "Enable Apify Proxy with RESIDENTIAL group (US region) in "
-                    "Proxy Configuration and re-run."
+                    "Enable Apify Proxy with GOOGLE_SERP group (recommended) "
+                    "or RESIDENTIAL in Proxy Configuration and re-run."
                 ),
             )
             return
