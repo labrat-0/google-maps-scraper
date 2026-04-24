@@ -170,6 +170,11 @@ async def main() -> None:
                     # Stamp the timestamp at write time
                     item["scrapedAt"] = datetime.now(timezone.utc).isoformat()
 
+                    # Apify schema validation rejects `null` for typed fields
+                    # (e.g. "type": "number"). Omit None values — fields are
+                    # optional in the schema so absence is always valid.
+                    item = {k: v for k, v in item.items() if v is not None}
+
                     batch.append(item)
                     count += 1
                     state["scraped"] = count
