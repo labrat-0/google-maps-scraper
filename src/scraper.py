@@ -93,16 +93,13 @@ class GoogleMapsScraper:
     # ------------------------------------------------------------------ #
 
     async def _warmup_session(self) -> None:
-        """Prime the AsyncSession with real Google cookies (NID, etc.).
+        """Prime the HTTP session with real Google cookies for enrichment requests.
 
-        A cold session hitting /maps/search/ directly with fake/placeholder
-        cookies gets flagged by Google's bot detection and served a result-
-        less shell response. Visiting /maps/ first is what a real browser
-        does on a cold tab — Google responds with Set-Cookie for NID and
-        friends, which curl_cffi's AsyncSession retains and reuses for
-        subsequent search requests, passing the browser-likeness check.
+        Only runs when browser is absent — the browser handles its own cookies
+        via Playwright's context, so HTTP warmup is unnecessary (and slow).
         """
-        if self._session_warmed:
+        if self._session_warmed or self.browser is not None:
+            self._session_warmed = True
             return
         self._session_warmed = True
         try:
@@ -110,12 +107,6 @@ class GoogleMapsScraper:
             await self.client.get(
                 f"{BASE_URL}/maps/",
                 headers={"Referer": "https://www.google.com/"},
-                timeout=15.0,
-            )
-            # Also hit the search home to get search-specific cookies
-            await self.client.get(
-                f"{BASE_URL}/maps/search/",
-                headers={"Referer": f"{BASE_URL}/maps/"},
                 timeout=15.0,
             )
         except Exception as e:
