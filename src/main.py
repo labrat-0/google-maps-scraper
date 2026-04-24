@@ -43,8 +43,11 @@ class _SilencePPENotice(logging.Filter):
 
 logging.getLogger("apify").addFilter(_SilencePPENotice())
 
+# PPE event names. The base "place" charge comes from the auto-fired
+# `apify-default-dataset-item` event (one per push_data write), so we do
+# NOT fire a custom "place" event here — that would double-charge users.
 PPE_EVENTS = {
-    "place": "result_place",
+    "detail_enriched": "result_detail_enriched",
     "review": "result_review",
     "lead": "result_lead",
 }
@@ -275,18 +278,33 @@ async def main() -> None:
 
 
 async def _charge_place(item: dict, config: ScraperInput) -> None:
-    """Charge PPE events for a single item based on the active output view."""
-    try:
-        # Always charge the base place event
-        await Actor.charge(event_name=PPE_EVENTS["place"])
+    """Charge custom PPE events for a single item.
 
-        # Charge per review when reviews are included
+    The base per-place charge is handled automatically by Apify's
+    `apify-default-dataset-item` event each time push_data is called, so
+    this function only fires upgrade events for the premium enrichment
+    work the user opted into.
+    """
+    try:
+        # Detail enrichment upgrade: fires when the detail-page fetch
+        # actually yielded phone / website / hours / images. Keeps the
+        # charge honest — users aren't billed when the enrichment ran
+        # but produced nothing (e.g. a place with no phone on file).
+        if config.enrich_details and (
+            item.get("phone")
+            or item.get("website")
+            or item.get("openingHours")
+            or item.get("images")
+        ):
+            await Actor.charge(event_name=PPE_EVENTS["detail_enriched"])
+
+        # Per-review charge when reviews are included.
         reviews = item.get("reviews", [])
         if isinstance(reviews, list) and reviews:
             for _ in reviews:
                 await Actor.charge(event_name=PPE_EVENTS["review"])
 
-        # Charge lead event only when contact enrichment yielded something
+        # Lead charge only when contact enrichment produced something.
         if config.enrich_contacts and (
             item.get("emails") or item.get("socialProfiles")
         ):

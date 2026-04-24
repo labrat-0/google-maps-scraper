@@ -28,7 +28,8 @@ This actor extracts structured business data from Google Maps' public search pag
 
 | | This actor | [compass/crawler-google-places](https://apify.com/compass/crawler-google-places) |
 |---|---|---|
-| **Price per 1k places** | **$0.80** | $2.10 |
+| **Price per 1k places (base)** | **$0.80** | $2.10 |
+| **Price per 1k places + full details** | **$1.50** | Higher |
 | **Price per 1k reviews** | **$0.40** | Bundled / variable |
 | **Memory** | **512 MB–1 GB** | Up to 8 GB |
 | **Tech** | Pure HTTP (no browser) | Headless Chrome |
@@ -121,7 +122,9 @@ Use this actor as a live data source for AI agents:
     "Tuesday": "7:00 AM – 6:00 PM"
   },
   "thumbnailUrl": "https://lh5.googleusercontent.com/...",
+  "images": ["https://lh5.googleusercontent.com/..."],
   "placeUrl": "https://www.google.com/maps/place/Blue+Bottle+Coffee/@30.2592,-97.7242,15z",
+  "streetViewUrl": "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=30.2592,-97.7242",
   "permanentlyClosed": false,
   "temporarilyClosed": false,
   "searchKeywords": "coffee shops",
@@ -172,8 +175,9 @@ Use this actor as a live data source for AI agents:
 | `includeClosed` | boolean | `true` | Include permanently / temporarily closed places |
 | `maxReviewsPerPlace` | integer | `10` | 0 to skip reviews entirely |
 | `includeReviewSentiment` | boolean | `true` | Adds positive/neutral/negative review counts |
+| `enrichDetails` | boolean | `false` | Visit each place's detail page for phone, website, opening hours, and images. Adds ~8-10 s per place |
 | `enrichContacts` | boolean | `false` | Scrape email + socials from each place's website |
-| `enrichLinkedIn` | boolean | `false` | Adds LinkedIn search URL per result |
+| `enrichLinkedIn` | boolean | `false` | Adds LinkedIn search URL per result (free) |
 | `outputView` | select | `places` | `places`, `reviews`, or `leads` |
 | `maxResults` | integer | `100` | Total cap across all searches (free: 25, paid: 10,000) |
 | `maxResultsPerSearch` | integer | `100` | Cap per keyword × location combo |
@@ -209,6 +213,7 @@ Find every high-rated dental practice in Dallas and extract their emails + socia
   "keywords": "dentist",
   "location": "Dallas, TX",
   "minRating": 4,
+  "enrichDetails": true,
   "enrichContacts": true,
   "enrichLinkedIn": true,
   "outputView": "leads",
@@ -226,22 +231,32 @@ Run this actor first to get a list of target companies with `enrichLinkedIn: tru
 
 ---
 
-## Pricing (Pay-Per-Event)
+## Pricing (Pay-Per-Event + Usage)
+
+Pay only for what you get. Base charge covers every place returned; optional upgrade charges fire only when you actually receive the extra data. No monthly fees. Apify compute + proxy traffic is passed through at cost on top.
 
 | Event | Price | Triggered when |
 |---|---|---|
-| `result_place` | **$0.0008** ($0.80 / 1k) | Every place returned |
-| `result_review` | **$0.0004** ($0.40 / 1k) | Every review attached to a place |
-| `result_lead` | **$0.0015** ($1.50 / 1k) | When `enrichContacts` produces an email or social |
+| **Place result** (`apify-default-dataset-item`) | **$0.0008** ($0.80 / 1k) | Every place in the dataset — name, rating, category, address, coordinates, thumbnail, Street View URL |
+| **Detail-enriched place** (`result_detail_enriched`) | **$0.0007** ($0.70 / 1k) | When `enrichDetails: true` returned phone, website, full opening hours, or images |
+| **Review extracted** (`result_review`) | **$0.0004** ($0.40 / 1k) | Per review attached to a place |
+| **Contact-enriched lead** (`result_lead`) | **$0.0015** ($1.50 / 1k) | When `enrichContacts: true` yielded at least one email or social profile |
+| **LinkedIn search URL** (`enrichLinkedIn`) | **FREE** | Every place when enabled |
+| **Street View URL** | **FREE** | Every place with coordinates |
+| Actor start (`apify-actor-start`) | $0.00005 (first 5s waived) | Once per run |
 
-You only pay for what you get. No monthly fees. Proxy traffic billed separately (~$12.50/GB for residential, as priced by Apify).
+**Free tier:** 25 places per run. Reviews, detail enrichment, and contact enrichment disabled. Try before you subscribe.
 
-**Free tier:** 25 places per run, no reviews, no contact enrichment. Try before you subscribe.
+### Cost examples
 
-**Example cost** — 1,000 places with 5 reviews each and contact enrichment yielding leads on 60% of them:
-`1,000 × $0.0008 + 5,000 × $0.0004 + 600 × $0.0015 = $0.80 + $2.00 + $0.90 = $3.70`
+Basic run — 1,000 places, no reviews, no enrichment:
+`1,000 × $0.0008 = $0.80`
 
-Compass charges roughly `1,000 × $0.0021 = $2.10` for places only — and extra for reviews and leads.
+Full-data run — 1,000 places with detail enrichment, 5 reviews each, contact enrichment hitting 60%:
+`$0.80 + (1,000 × $0.0007) + (5,000 × $0.0004) + (600 × $0.0015)`
+`= $0.80 + $0.70 + $2.00 + $0.90 = $4.40`
+
+Compass charges roughly `1,000 × $0.0021 = $2.10` for places alone, plus separate fees for reviews and contact enrichment. This actor is **62% cheaper on the base rate** and transparent on every upgrade.
 
 ---
 
@@ -283,15 +298,17 @@ With residential proxies, the actor reliably handles runs of thousands of places
 
 ## Timeout & memory guidance
 
-The actor enforces a 3-second delay between requests to stay under Google's soft rate limits. With reviews or contact enrichment enabled, each place requires additional requests, so runtime scales with your result count.
+Detail enrichment, reviews, and contact enrichment each add requests per place, so runtime scales with your result count and which upgrades you enable.
 
-| Max results | Reviews | Contacts | Est. runtime | Recommended timeout |
-|---|---|---|---|---|
-| 25 (free tier) | 0 | false | ~2 min | 180 s |
-| 100 | 10 | false | ~10 min | 900 s |
-| 250 | 10 | true | ~40 min | 3000 s |
-| 1,000 | 5 | false | ~1 hr | 4500 s |
-| 5,000 | 0 | false | ~3 hr | 14400 s |
+| Max results | Detail | Reviews | Contacts | Est. runtime | Recommended timeout |
+|---|---|---|---|---|---|
+| 25 (free tier) | false | 0 | false | ~45 s | 180 s |
+| 25 | true | 0 | false | ~4 min | 600 s |
+| 100 | false | 10 | false | ~10 min | 900 s |
+| 100 | true | 10 | false | ~20 min | 1800 s |
+| 250 | true | 10 | true | ~50 min | 3600 s |
+| 1,000 | false | 5 | false | ~1 hr | 4500 s |
+| 5,000 | false | 0 | false | ~3 hr | 14400 s |
 
 **Memory:** 512 MB is enough for most runs. Use 1 GB for runs > 500 results or with contact enrichment enabled.
 
