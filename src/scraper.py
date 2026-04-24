@@ -21,7 +21,7 @@ import logging
 import re
 from collections.abc import AsyncIterator
 from typing import Any
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote_plus, unquote_plus, urlparse
 
 from bs4 import BeautifulSoup, Tag
 from curl_cffi.requests import AsyncSession
@@ -245,8 +245,15 @@ class GoogleMapsScraper:
             place["searchKeywords"] = keywords
             place["searchLocation"] = location
 
-            # Enrich with place detail page (reviews, full hours, etc.)
-            if place.get("placeUrl"):
+            # Enrich with place detail page only when needed:
+            # - place is missing name (came from fallback URL scan), OR
+            # - reviews or contacts are requested (require a detail-page fetch)
+            needs_detail = (
+                not place.get("name")
+                or self.config.max_reviews_per_place > 0
+                or self.config.enrich_contacts
+            )
+            if place.get("placeUrl") and needs_detail:
                 place = await self._enrich_place_details(place)
 
             # Optional contact enrichment (email/social from website)
@@ -704,8 +711,9 @@ class GoogleMapsScraper:
         """Last-ditch parse — scrape place URLs out of the raw HTML.
 
         When the APP_INIT schema changes on us, we can still surface results
-        by harvesting `/maps/place/...` hrefs and lat/lng from the HTML and
-        enriching each via its detail page.
+        by harvesting `/maps/place/...` hrefs and metadata encoded in the URL.
+        Name and coordinates are decoded from the URL so places are usable
+        without requiring an additional HTTP fetch per result.
         """
         places: list[dict[str, Any]] = []
         seen = set()
@@ -716,11 +724,23 @@ class GoogleMapsScraper:
             seen.add(url_path)
             full_url = f"{BASE_URL}{url_path}"
             cid_m = CID_RE.search(url_path)
+
+            # Decode place name from URL: /maps/place/Business+Name/@...
+            name_m = re.search(r"/maps/place/([^/@?+\s][^/@?]*)", url_path)
+            name = unquote_plus(name_m.group(1)).strip() if name_m else ""
+
+            # Decode coordinates from URL: /@lat,lng,zoom
+            coord_m = LAT_LNG_RE.search(url_path)
+            lat = float(coord_m.group(1)) if coord_m else None
+            lng = float(coord_m.group(2)) if coord_m else None
+
             places.append({
                 "placeId": "",
                 "googleCid": cid_m.group(0) if cid_m else "",
-                "name": "",
+                "name": name,
                 "placeUrl": full_url,
+                "latitude": lat,
+                "longitude": lng,
             })
             if len(places) >= 40:  # sane cap for fallback
                 break
@@ -743,6 +763,7 @@ class GoogleMapsScraper:
         html = await fetch_html(
             self.client, url, self.rate_limiter,
             proxy_config=self.proxy_config,
+            timeout=10.0,
         )
         if not html:
             return place

@@ -128,6 +128,7 @@ async def fetch_html(
     api_request: bool = False,
     proxy_config: Any = None,
     referer: str | None = None,
+    timeout: float = 30.0,
 ) -> str | None:
     """Fetch a URL and return response text, with retry/backoff and proxy rotation.
 
@@ -164,7 +165,7 @@ async def fetch_html(
                 url,
                 params=params,
                 headers=get_api_headers(headers_ref) if api_request else get_headers(headers_ref),
-                timeout=30.0,
+                timeout=timeout,
             )
 
             status = response.status_code
