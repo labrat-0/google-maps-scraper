@@ -388,8 +388,15 @@ class BrowserFetcher:
         wait_selector: str = 'a[href*="/maps/place/"]',
         nav_timeout_ms: int = 45000,
         selector_timeout_ms: int = 30000,
+        scroll_target: int = 0,
     ) -> str | None:
-        """Navigate to URL, wait for result DOM to populate, return rendered HTML."""
+        """Navigate to URL, wait for results, optionally scroll for more, return DOM.
+
+        Args:
+            scroll_target: Number of place URLs to aim for by scrolling the
+                results sidebar. Google Maps lazy-loads more places as the
+                sidebar scrolls, capped at ~120. 0 disables scrolling.
+        """
         if self._context is None:
             logger.error("BrowserFetcher.fetch called before start()")
             return None
@@ -415,9 +422,6 @@ class BrowserFetcher:
             pass
 
         try:
-            # "commit" fires as soon as the response starts streaming — much
-            # faster than waiting for all sub-resources to finish loading,
-            # and enough for the JS that triggers result XHRs to start.
             try:
                 await page.goto(url, wait_until="commit", timeout=nav_timeout_ms)
             except Exception as e:
@@ -432,9 +436,11 @@ class BrowserFetcher:
                     f"{selector_timeout_ms}ms on {url[:80]} — returning current DOM"
                 )
 
-            # Use evaluate with a hard asyncio timeout. page.content() can
-            # hang indefinitely if navigation is still in progress; evaluate
-            # is a synchronous call into the renderer that returns immediately.
+            # Scroll the results sidebar to trigger lazy-loading of more places.
+            # This is THE feature that gets us from 7 to 20+ results per search.
+            if scroll_target > 0:
+                await self._scroll_for_more_results(page, scroll_target)
+
             try:
                 html = await asyncio.wait_for(
                     page.evaluate("document.documentElement.outerHTML"),
@@ -452,6 +458,103 @@ class BrowserFetcher:
                 await page.close()
             except Exception:
                 pass
+
+    async def _scroll_for_more_results(
+        self,
+        page: Any,
+        target_count: int,
+        max_scrolls: int = 15,
+        wait_between_ms: int = 1200,
+    ) -> None:
+        """Scroll Google Maps' results sidebar until target hit or list is exhausted.
+
+        Google Maps packs results into a scrollable `div[role="feed"]`. Scrolling
+        that container to its bottom fires XHRs that append more places to the
+        DOM. We stop when any of: target reached, "You've reached the end"
+        marker appears, two consecutive scrolls produce no new results, or
+        max_scrolls hit (safety).
+        """
+        feed_js_present = """
+            (() => {
+                const feed = document.querySelector('div[role="feed"]');
+                return feed !== null;
+            })()
+        """
+        try:
+            has_feed = await page.evaluate(feed_js_present)
+        except Exception:
+            has_feed = False
+
+        if not has_feed:
+            logger.info("No scrollable feed found — returning first batch only")
+            return
+
+        place_count_js = """
+            document.querySelectorAll('a[href*="/maps/place/"]').length
+        """
+        scroll_js = """
+            (() => {
+                const feed = document.querySelector('div[role="feed"]');
+                if (feed) { feed.scrollTop = feed.scrollHeight; return true; }
+                return false;
+            })()
+        """
+        end_marker_js = r"""
+            Boolean(
+                [...document.querySelectorAll('p, span, div')]
+                .some(el => /you['’]ve reached the end/i.test(el.textContent || ''))
+            )
+        """
+
+        last_count = 0
+        stuck = 0
+        for i in range(max_scrolls):
+            try:
+                current_count = await page.evaluate(place_count_js)
+            except Exception:
+                break
+
+            if current_count >= target_count:
+                logger.info(
+                    f"Scroll: target reached ({current_count}/{target_count}) "
+                    f"after {i} scrolls"
+                )
+                return
+
+            try:
+                at_end = await page.evaluate(end_marker_js)
+                if at_end:
+                    logger.info(
+                        f"Scroll: end marker found at {current_count} results"
+                    )
+                    return
+            except Exception:
+                pass
+
+            try:
+                await page.evaluate(scroll_js)
+            except Exception as e:
+                logger.debug(f"Scroll evaluate failed: {e}")
+                break
+
+            await asyncio.sleep(wait_between_ms / 1000)
+
+            if current_count == last_count:
+                stuck += 1
+                if stuck >= 2:
+                    logger.info(
+                        f"Scroll: no new results for 2 rounds — stopping at {current_count}"
+                    )
+                    return
+            else:
+                stuck = 0
+            last_count = current_count
+
+        try:
+            final = await page.evaluate(place_count_js)
+            logger.info(f"Scroll: max {max_scrolls} reached at {final} results")
+        except Exception:
+            pass
 
     async def close(self) -> None:
         """Tear down browser + playwright."""

@@ -192,7 +192,11 @@ class GoogleMapsScraper:
             logger.info(f"Attempt {attempt + 1}/{max_attempts}: {url[:120]}")
 
             if self.browser is not None:
-                html = await self.browser.fetch(url)
+                # Scroll to load up to the per-search cap; Google caps ~120
+                # results per single search so bump target a little over the
+                # user's limit to ensure we don't stop at a lazy-load stall.
+                scroll_target = min(self.config.max_results_per_search + 5, 120)
+                html = await self.browser.fetch(url, scroll_target=scroll_target)
             else:
                 # Fallback to HTTP fetch (local testing without browser)
                 html = await fetch_html(

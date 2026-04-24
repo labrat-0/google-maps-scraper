@@ -25,6 +25,24 @@ logger = logging.getLogger(__name__)
 
 FREE_TIER_LIMIT = 25
 
+
+class _SilencePPENotice(logging.Filter):
+    """Suppress Apify SDK's 'Ignored attempt to charge' warning.
+
+    The warning fires on every item when the actor's pricing model isn't
+    set to PAY_PER_EVENT on the Apify console. For development / free
+    tier runs, spamming the log with 25 copies of this message is noise.
+    When the operator enables PPE pricing, charges will start working
+    automatically — the _charge_place calls stay in place, so we just
+    hide the noise from the log without disabling the functionality.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "Ignored attempt to charge" not in record.getMessage()
+
+
+logging.getLogger("apify").addFilter(_SilencePPENotice())
+
 PPE_EVENTS = {
     "place": "result_place",
     "review": "result_review",
