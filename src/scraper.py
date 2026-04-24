@@ -359,9 +359,12 @@ class GoogleMapsScraper:
         if not state:
             return self._fallback_extract_from_html(raw_html)
 
-        # Known locations for the pb-encoded results string across Maps variants
+        # state[3] is often a list of length 2 where one element is the
+        # XSSI-prefixed results JSON. Try direct indices first (matches
+        # the shape our diagnostic revealed), then deeper known paths.
         candidate_indices: list[tuple[int, ...]] = [
-            (3, 2), (3, 6), (3, 0, 2), (0, 2), (6, 2),
+            (3, 0), (3, 1), (3, 2), (3, 6),
+            (3, 0, 2), (0, 2), (6, 2), (0, 0, 2),
         ]
 
         for idx in candidate_indices:
@@ -370,37 +373,86 @@ class GoogleMapsScraper:
             if parsed is None:
                 continue
 
-            # Try multiple known paths for the result list
-            result_lists: list[Any] = [
+            # Try the many known index paths for the result list
+            result_list_candidates: list[Any] = [
                 safe_get(parsed, 64),
                 safe_get(parsed, 0, 1),
                 safe_get(parsed, 0, 0, 1),
                 safe_get(parsed, 1, 1),
+                safe_get(parsed, 11),   # observed in response with result count at [6]
+                safe_get(parsed, 12),
+                safe_get(parsed, 1),
             ]
-            for rl in result_lists:
-                if isinstance(rl, list):
+            for rl in result_list_candidates:
+                if isinstance(rl, list) and len(rl) > 0:
                     for entry in rl:
                         place = self._entry_to_place(entry)
-                        if place:
+                        if place and place.get("name"):
                             places.append(place)
                     if places:
                         return places
 
-            # Last-resort recursive walk: find any nested list whose entries
-            # look like business records (have a name string deep inside)
-            if not places:
-                recursive = self._recursive_find_places(parsed)
-                if recursive:
-                    return recursive
+            # Recursive walk: find any nested list whose entries look like
+            # business records (has a reasonable name field)
+            recursive = self._recursive_find_places(parsed)
+            if recursive:
+                return recursive
 
-        if not places:
-            # Dump state shape so we can see why extraction failed on Apify
-            logger.warning(
-                f"State parsed but no places found. "
-                f"Top-level shape: {self._describe_state(state)}"
+        # Structural extraction failed for every candidate. Scan the ENTIRE
+        # state tree for FIDs — Google embeds place feature IDs (0xhex:0xhex)
+        # throughout the response regardless of the outer layout, so this
+        # catches places even when indices we know about don't match.
+        fid_places = self._extract_places_by_fid_scan(state)
+        if fid_places:
+            logger.info(
+                f"Extracted {len(fid_places)} places via full-state FID scan"
             )
-            places = self._fallback_extract_from_html(raw_html)
+            return fid_places
 
+        # Nothing worked — log and fall back to HTML scan
+        logger.warning(
+            f"State parsed but no places found. "
+            f"Top-level shape: {self._describe_state(state)}"
+        )
+        places = self._fallback_extract_from_html(raw_html)
+
+        return places
+
+    def _extract_places_by_fid_scan(self, parsed: Any) -> list[dict[str, Any]]:
+        """Scan the serialized parsed JSON for Google feature IDs.
+
+        Every Maps place has a FID of the form `0xHEX:0xHEX` embedded in
+        the response. When structural extraction fails, we can still
+        discover places by this pattern and build minimal records that
+        the detail-page fetcher will enrich.
+        """
+        try:
+            blob = json.dumps(parsed)
+        except (TypeError, ValueError):
+            return []
+
+        fids = list(dict.fromkeys(CID_RE.findall(blob)))  # preserve order, dedupe
+        if not fids:
+            return []
+
+        places: list[dict[str, Any]] = []
+        for fid in fids:
+            # Second hex of the FID is the decimal CID when converted
+            try:
+                cid_decimal = str(int(fid.split(":")[1], 16))
+            except (ValueError, IndexError):
+                cid_decimal = ""
+            place_url = (
+                f"{BASE_URL}/maps/place/?q=place_id:{fid}"
+                if not cid_decimal
+                else f"{BASE_URL}/maps?cid={cid_decimal}"
+            )
+            places.append({
+                "placeId": "",
+                "googleCid": fid,
+                "name": "",
+                "placeUrl": place_url,
+            })
         return places
 
     def _parse_xssi_string(self, raw: Any) -> Any:
@@ -463,7 +515,7 @@ class GoogleMapsScraper:
         for i, e in enumerate(state[:8]):
             sample = self._find_first_string(e, max_depth=4)
             if sample:
-                parts.append(f"[{i}].str={sample[:80]!r}")
+                parts.append(f"[{i}].str={sample[:400]!r}")
                 break
         return " ".join(parts)
 
@@ -485,13 +537,31 @@ class GoogleMapsScraper:
         if not isinstance(entry, list):
             return None
 
-        # The business record is conventionally at entry[14]
-        record = safe_get(entry, 14)
-        if not isinstance(record, list):
-            record = entry  # fall back to top level
+        # The business record lives at varying indices depending on Google's
+        # rollout — try the common ones then fall back to the entry itself.
+        record: Any = None
+        for rec_idx in (14, 13, 12, 0):
+            candidate = safe_get(entry, rec_idx)
+            if isinstance(candidate, list) and len(candidate) > 5:
+                record = candidate
+                break
+        if record is None:
+            record = entry
 
-        name = safe_get(record, 11) or safe_get(record, 2)
-        if not name or not isinstance(name, str):
+        # Name can appear at several indices; pick the first plausible string
+        name: Any = None
+        for name_idx in (11, 2, 1, 3):
+            candidate = safe_get(record, name_idx)
+            if (
+                isinstance(candidate, str)
+                and 1 < len(candidate) < 200
+                and not candidate.startswith("0x")  # skip feature IDs
+                and not candidate.startswith("http")  # skip URLs
+                and not candidate.startswith("/")
+            ):
+                name = candidate
+                break
+        if not name:
             return None
 
         place_id = safe_get(record, 78) or ""
