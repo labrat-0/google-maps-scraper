@@ -50,6 +50,7 @@ class ScraperInput(BaseModel):
     # Enrichment
     enrich_contacts: bool = False
     enrich_linkedin: bool = False
+    enrich_details: bool = False  # visit each place page for phone/website/hours/images
 
     # Scraper settings
     max_results: int = 100
@@ -97,6 +98,7 @@ class ScraperInput(BaseModel):
             include_review_sentiment=raw.get("includeReviewSentiment", True),
             enrich_contacts=raw.get("enrichContacts", False),
             enrich_linkedin=raw.get("enrichLinkedIn", False),
+            enrich_details=raw.get("enrichDetails", False),
             max_results=raw.get("maxResults", 100),
             max_results_per_search=raw.get("maxResultsPerSearch", 100),
             output_view=raw.get("outputView", "places"),

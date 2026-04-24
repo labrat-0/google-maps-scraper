@@ -116,9 +116,15 @@
             "editor": "textfield",
             "default": "en"
         },
+        "enrichDetails": {
+            "sectionCaption": "🎁 Enrichment",
+            "sectionDescription": "Optional enrichment steps. Each one visits additional pages per place — enable only what you need.",
+            "title": "📋 Enrich Place Details (Phone, Website, Hours, Images)",
+            "type": "boolean",
+            "description": "Visit each place's detail page to extract phone number, website, full opening hours, and photos. Adds ~8-10 seconds per place. Disabled by default — basic results (name, rating, category, address, coordinates) are extracted from the search page without this.",
+            "default": false
+        },
         "enrichContacts": {
-            "sectionCaption": "🎁 Enrichment (Lead Generation)",
-            "sectionDescription": "Turn place listings into full sales leads. Contact enrichment fetches each business website to extract emails and social profile links. Billed as 'result_lead' ($1.50 per 1,000) when it produces data.",
             "title": "📧 Enrich Contacts (Email + Social Profiles)",
             "type": "boolean",
             "description": "When enabled, fetches each place's website and extracts emails, Facebook, Instagram, Twitter/X, LinkedIn, YouTube, TikTok, and Pinterest profile URLs. Cached per unique website within the run.",

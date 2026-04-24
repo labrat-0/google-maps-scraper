@@ -160,7 +160,7 @@ async def main() -> None:
             review_count = state["reviews"]
             lead_count = state["leads"]
             batch: list[dict] = []
-            batch_size = 20
+            batch_size = 5
 
             try:
                 async for item in scraper.scrape():

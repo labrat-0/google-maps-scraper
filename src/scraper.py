@@ -257,18 +257,20 @@ class GoogleMapsScraper:
             place["searchKeywords"] = keywords
             place["searchLocation"] = location
 
-            # Always enrich when a browser is available — gets phone, website,
-            # full address, opening hours, and images from the place detail page.
-            # Without browser, only enrich if name is missing or reviews needed.
-            if self.browser is not None:
-                needs_detail = bool(place.get("placeUrl"))
-            else:
-                needs_detail = (
-                    not place.get("name")
-                    or self.config.max_reviews_per_place > 0
-                    or self.config.enrich_contacts
-                )
-            if needs_detail:
+            # Detail enrichment (phone, website, hours, images) requires a
+            # separate page load per place. Only run it when:
+            #   - reviews are requested, OR
+            #   - contact enrichment is requested, OR
+            #   - place has no name yet (came from bare URL fallback)
+            # Feed card data (name, rating, category, address, coords) is
+            # already good enough for basic place output without this step.
+            needs_detail = (
+                not place.get("name")
+                or self.config.max_reviews_per_place > 0
+                or self.config.enrich_contacts
+                or self.config.enrich_details
+            )
+            if needs_detail and place.get("placeUrl"):
                 place = await self._enrich_place_details(place)
 
             # Optional contact enrichment (email/social from website)
