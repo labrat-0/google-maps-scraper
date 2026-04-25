@@ -16,6 +16,7 @@ Supports:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -251,22 +252,9 @@ class GoogleMapsScraper:
 
         logger.info(f"Extracted {len(places)} raw place entries for '{query}'")
 
-        per_search_count = 0
-        for place in places:
-            if per_search_count >= self.config.max_results_per_search:
-                break
+        _ENRICH_BATCH = 4
 
-            place_id = place.get("placeId") or ""
-            cid = place.get("googleCid") or ""
-            if place_id and place_id in self._seen_place_ids:
-                continue
-            if cid and cid in self._seen_cids:
-                continue
-
-            # Annotate with which search combo found it
-            place["searchKeywords"] = keywords
-            place["searchLocation"] = location
-
+        async def _process_candidate(place: dict[str, Any]) -> dict[str, Any]:
             # Detail enrichment (phone, website, hours, images) requires a
             # separate page load per place. Only run it when:
             #   - reviews are requested, OR
@@ -282,32 +270,53 @@ class GoogleMapsScraper:
             )
             if needs_detail and place.get("placeUrl"):
                 place = await self._enrich_place_details(place)
-
-            # Optional contact enrichment (email/social from website)
             if self.config.enrich_contacts and place.get("website"):
                 place = await self._enrich_contacts(place)
-
-            # LinkedIn search URL for lead-gen pipelines
             if self.config.enrich_linkedin and place.get("name"):
                 place["linkedinSearchUrl"] = self._build_linkedin_search_url(
                     place["name"],
                 )
+            return place
 
-            # Apply rating / closed filters
-            if not self.config.should_include_place(
-                rating=place.get("rating"),
-                is_closed=bool(place.get("permanentlyClosed")),
-            ):
+        # Pre-filter: dedup + annotate, collect all candidates for this page
+        candidates: list[tuple[dict[str, Any], str, str]] = []
+        for place in places:
+            place_id = place.get("placeId") or ""
+            cid = place.get("googleCid") or ""
+            if place_id and place_id in self._seen_place_ids:
                 continue
+            if cid and cid in self._seen_cids:
+                continue
+            # Annotate with which search combo found it
+            place["searchKeywords"] = keywords
+            place["searchLocation"] = location
+            candidates.append((place, place_id, cid))
 
-            if place_id:
-                self._seen_place_ids.add(place_id)
-            if cid:
-                self._seen_cids.add(cid)
-
-            # Apply output view preset
-            yield self._apply_output_view(place)
-            per_search_count += 1
+        # Enrich in parallel batches of _ENRICH_BATCH, yield as each batch lands
+        per_search_count = 0
+        for batch_start in range(0, len(candidates), _ENRICH_BATCH):
+            if per_search_count >= self.config.max_results_per_search:
+                break
+            batch = candidates[batch_start : batch_start + _ENRICH_BATCH]
+            enriched_batch = await asyncio.gather(
+                *[_process_candidate(p) for p, _, _ in batch]
+            )
+            for (_, place_id, cid), enriched in zip(batch, enriched_batch):
+                if per_search_count >= self.config.max_results_per_search:
+                    break
+                # Apply rating / closed filters
+                if not self.config.should_include_place(
+                    rating=enriched.get("rating"),
+                    is_closed=bool(enriched.get("permanentlyClosed")),
+                ):
+                    continue
+                if place_id:
+                    self._seen_place_ids.add(place_id)
+                if cid:
+                    self._seen_cids.add(cid)
+                # Apply output view preset
+                yield self._apply_output_view(enriched)
+                per_search_count += 1
 
     # ------------------------------------------------------------------ #
     # Direct place URL mode                                              #
