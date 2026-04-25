@@ -385,6 +385,26 @@ _EXTRACT_PLACES_JS = """
             var e = href.indexOf('!', s);
             return e < 0 ? href.slice(s) : href.slice(s, e);
         }
+        // The link <a> only contains the business name. Rating, category,
+        // address, and the thumbnail <img> are siblings inside the parent
+        // card container. Walk up from the link until we find a node with
+        // substantially more text than the link or at least one image,
+        // without crossing into a parent that contains multiple place links.
+        function findCard(link, feed) {
+            var node = link;
+            var linkText = (link.innerText || '').trim();
+            for (var d = 0; d < 6; d++) {
+                if (!node.parentElement || node.parentElement === feed) break;
+                node = node.parentElement;
+                if (node.querySelectorAll('a[href*="/maps/place/"]').length > 1) {
+                    break; // went too high — back off
+                }
+                var rawText = (node.innerText || '').trim();
+                if (rawText.length > linkText.length + 8) return node;
+                if (node.querySelectorAll('img').length > 0) return node;
+            }
+            return link;
+        }
         var feed = document.querySelector('div[role="feed"]');
         if (!feed) return '[]';
         var seen = {};
@@ -395,16 +415,22 @@ _EXTRACT_PLACES_JS = """
             var href = a.getAttribute('href') || '';
             if (!href || seen[href]) continue;
             seen[href] = 1;
+
+            var card = findCard(a, feed);
+
             var latStr  = getParam(href, '!3d');
             var lngStr  = getParam(href, '!4d');
             var placeId = getParam(href, '!19s');
             var cid     = getParam(href, '!1s');
 
-            // Thumbnail: find the first googleusercontent img within the card.
-            // Google Maps renders a preview photo per result which we can
-            // harvest without a detail-page fetch.
+            // Trim trailing URL query/fragment that some Google rollouts
+            // append after the place ID inside the !19s segment.
+            var qPos = placeId.indexOf('?');
+            if (qPos > 0) placeId = placeId.substring(0, qPos);
+
+            // Thumbnail: look inside the CARD container, not the link.
             var thumb = '';
-            var imgs = a.querySelectorAll('img');
+            var imgs = card.querySelectorAll('img');
             for (var j = 0; j < imgs.length; j++) {
                 var src = imgs[j].src || '';
                 if (src && src.indexOf('googleusercontent') >= 0) {
@@ -415,7 +441,7 @@ _EXTRACT_PLACES_JS = """
 
             out.push({
                 href:       href,
-                text:       (a.innerText || a.textContent || '').trim(),
+                text:       (card.innerText || card.textContent || '').trim(),
                 ariaLabel:  (a.getAttribute('aria-label') || '').trim(),
                 lat:        latStr ? parseFloat(latStr) : null,
                 lng:        lngStr ? parseFloat(lngStr) : null,
@@ -537,16 +563,27 @@ class BrowserFetcher:
 
         page = await self._context.new_page()
 
-        # Block heavy non-essential resources (images, fonts, media). Google
-        # Maps ships ~20MB of these; blocking them cuts navigation time by
-        # ~70% without affecting the JS that populates search results.
+        # Block heavy non-essential resources. Google Maps ships ~20MB of
+        # map tiles, custom fonts, and avatar media; blocking them cuts
+        # navigation time by ~70%. We DO allow images from googleusercontent
+        # (the place-photo CDN) so the JS extractor can read thumbnail
+        # src attributes — those are the user-visible card thumbnails.
         async def _route(route: Any) -> None:
-            rtype = route.request.resource_type
-            if rtype in ("image", "font", "media"):
+            req = route.request
+            rtype = req.resource_type
+            if rtype in ("font", "media"):
                 try:
                     await route.abort()
                 except Exception:
                     await route.continue_()
+            elif rtype == "image":
+                if "googleusercontent" in req.url:
+                    await route.continue_()
+                else:
+                    try:
+                        await route.abort()
+                    except Exception:
+                        await route.continue_()
             else:
                 await route.continue_()
 
@@ -737,12 +774,22 @@ class BrowserFetcher:
         page = await self._context.new_page()
 
         async def _route_detail(route: Any) -> None:
-            rtype = route.request.resource_type
-            if rtype in ("image", "font", "media"):
+            req = route.request
+            rtype = req.resource_type
+            if rtype in ("font", "media"):
                 try:
                     await route.abort()
                 except Exception:
                     await route.continue_()
+            elif rtype == "image":
+                # Allow place-photo CDN; block map tiles + everything else
+                if "googleusercontent" in req.url:
+                    await route.continue_()
+                else:
+                    try:
+                        await route.abort()
+                    except Exception:
+                        await route.continue_()
             else:
                 await route.continue_()
 

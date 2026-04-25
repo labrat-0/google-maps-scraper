@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import quote_plus, unquote_plus, urlparse
@@ -955,8 +956,11 @@ class GoogleMapsScraper:
                     result["address"] = line
                 continue
 
-            # Category candidate: starts with a letter, no digits
-            if re.match(r"^[A-Za-z]", line) and not re.search(r"\d", line):
+            # Category candidate: must start with a letter (filters out
+            # addresses, ratings, review counts). Digits inside are OK so
+            # categories like "24-hour service" or "3D printing service"
+            # aren't dropped.
+            if re.match(r"^[A-Za-z]", line):
                 category_candidates.append(line)
 
         if category_candidates:
@@ -999,10 +1003,15 @@ class GoogleMapsScraper:
                 place["phone"] = detail["phone"]
             if detail.get("website") and not place.get("website"):
                 place["website"] = detail["website"]
-            if detail.get("address") and not place.get("address"):
+            # Detail-page address is canonical (full street + city + ZIP);
+            # the feed card only shows a truncated version. Always prefer
+            # detail when available rather than falling back to the partial.
+            if detail.get("address"):
                 place["address"] = detail["address"]
             if detail.get("openingHours"):
                 place["openingHours"] = detail["openingHours"]
+            # Detail-page images are richer (gallery photos) than the feed
+            # thumbnail. Replace rather than ignore — we want the gallery.
             if detail.get("images"):
                 place["images"] = detail["images"]
 
@@ -1066,12 +1075,14 @@ class GoogleMapsScraper:
         """Extract visible review cards from a place detail page."""
         reviews: list[dict[str, Any]] = []
 
-        # Reviews often live in script tags as a JSON array. Look for them.
+        # Reviews often live in script tags as a JSON array. Pull more than
+        # max_reviews so duplicates (the same review appears in both a JSPB
+        # block and a structured-data island) can be filtered before slicing.
         review_blocks = re.findall(
             r'\[\\?"(.+?)\\?",\s*\[?\[?\d+,\\?"([1-5]) stars?\\?"',
             html,
         )
-        for text, rating_str in review_blocks[:max_reviews]:
+        for text, rating_str in review_blocks[: max_reviews * 4]:
             try:
                 rating = int(rating_str)
             except ValueError:
@@ -1100,7 +1111,20 @@ class GoogleMapsScraper:
                 if text or rating:
                     reviews.append({"text": text, "rating": rating})
 
-        return reviews[:max_reviews]
+        # Dedupe by text — Google often emits the same review in two places
+        # (rendered card + JSON island), and we don't want users charged for
+        # duplicates via result_review.
+        seen_texts: set[str] = set()
+        deduped: list[dict[str, Any]] = []
+        for r in reviews:
+            txt = r.get("text", "")
+            if txt and txt in seen_texts:
+                continue
+            if txt:
+                seen_texts.add(txt)
+            deduped.append(r)
+
+        return deduped[:max_reviews]
 
     def _compute_review_sentiment(
         self,
@@ -1181,9 +1205,16 @@ class GoogleMapsScraper:
         """Build a ready-to-use LinkedIn company search URL.
 
         Feed this into labrat011/linkedin-jobs-scraper's `companyFilter` field
-        or use directly for manual research.
+        or use directly for manual research. Unicode characters are first
+        decomposed to ASCII (Café -> Cafe, Crème -> Creme) so the slug isn't
+        gutted by the non-ASCII strip.
         """
-        slug = re.sub(r"[^a-zA-Z0-9\s]", "", company_name).strip()
+        ascii_name = (
+            unicodedata.normalize("NFKD", company_name)
+            .encode("ascii", "ignore")
+            .decode("ascii")
+        )
+        slug = re.sub(r"[^a-zA-Z0-9\s]", "", ascii_name).strip()
         slug = re.sub(r"\s+", "%20", slug)
         return f"https://www.linkedin.com/search/results/companies/?keywords={slug}"
 
