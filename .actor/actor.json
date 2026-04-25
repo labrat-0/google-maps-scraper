@@ -13,5 +13,10 @@
     "dockerfile": "./Dockerfile",
     "minMemoryMbytes": 512,
     "maxMemoryMbytes": 4096,
+    "defaultRunOptions": {
+        "build": "latest",
+        "memoryMbytes": 1024,
+        "timeoutSecs": 1500
+    },
     "categories": ["BUSINESS", "LEAD_GENERATION", "MAPS", "SEO_TOOLS"]
 }
