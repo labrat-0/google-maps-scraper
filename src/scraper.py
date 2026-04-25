@@ -957,6 +957,16 @@ class GoogleMapsScraper:
                 if not result["reviewCount"]:
                     result["reviewCount"] = _to_count(m.group(2))
 
+        # "1,234 reviews" / "1.2K reviews" anywhere in the raw card text.
+        # Same pattern already applied to aria_label above; needed here for
+        # cards where the count follows a · separator in the innerText field.
+        if not result["reviewCount"]:
+            m = re.search(
+                r"([\d,.]+\s*[KkMm]?)\s+reviews?", text, re.IGNORECASE
+            )
+            if m:
+                result["reviewCount"] = _to_count(m.group(1))
+
         # Split on newlines and middle-dot separators Google uses in cards
         lines = [
             l.strip()
