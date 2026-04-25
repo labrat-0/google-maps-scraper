@@ -308,12 +308,22 @@ _DETAIL_JS = """
         // Website ------------------------------------------------------
         var ws = document.querySelector('a[data-item-id="authority"]');
         if (ws) {
-            out.website = ws.href || '';
+            var rawHref = '';
+            try { rawHref = ws.href || ''; } catch(he) {}
+            if (!rawHref) rawHref = ws.getAttribute('href') || '';
+            if (rawHref.indexOf('http://') === 0 || rawHref.indexOf('https://') === 0) {
+                out.website = rawHref;
+            }
         }
         if (!out.website) {
             var wBtn = document.querySelector('[aria-label^="Website:"]');
-            if (wBtn) out.website = (wBtn.getAttribute('aria-label') || '')
-                                     .replace(/^Website:\\s*/i, '').trim();
+            if (wBtn) {
+                var wLabel = (wBtn.getAttribute('aria-label') || '')
+                             .replace(/^Website:\\s*/i, '').trim();
+                if (wLabel.indexOf('http://') === 0 || wLabel.indexOf('https://') === 0) {
+                    out.website = wLabel;
+                }
+            }
         }
 
         // Address ------------------------------------------------------

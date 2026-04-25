@@ -1067,7 +1067,9 @@ class GoogleMapsScraper:
             if detail.get("phone") and not place.get("phone"):
                 place["phone"] = detail["phone"]
             if detail.get("website") and not place.get("website"):
-                place["website"] = detail["website"]
+                w = detail["website"]
+                if isinstance(w, str) and w.startswith(("http://", "https://")):
+                    place["website"] = w
             # Detail-page address is canonical (full street + city + ZIP);
             # the feed card only shows a truncated version. Always prefer
             # detail when available rather than falling back to the partial.
