@@ -6,6 +6,7 @@ crawlee_storage/
 
 # Internal knowledge (do not publish)
 .arc/
+.claude/
 
 # Python
 __pycache__/
