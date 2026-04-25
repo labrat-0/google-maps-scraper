@@ -889,14 +889,64 @@ class GoogleMapsScraper:
             "priceLevel": None,
         }
 
-        # aria-label is the most structured source: "Name 4.5 stars 1,234 reviews …"
+        def _to_count(raw: str) -> int:
+            """Parse '1,234', '1.2K', '2.5M' into an int. Returns 0 on failure."""
+            raw = raw.strip().replace(",", "")
+            m = re.match(r"^([\d.]+)\s*([KkMm]?)$", raw)
+            if not m:
+                return 0
+            try:
+                num = float(m.group(1))
+            except ValueError:
+                return 0
+            suffix = m.group(2).upper()
+            if suffix == "K":
+                num *= 1_000
+            elif suffix == "M":
+                num *= 1_000_000
+            return int(num)
+
+        # aria-label is the most structured source. Google's modern format
+        # varies: "Name · 4.5 stars 1,234 Reviews · ..." OR "Name, 4.5 (1,234)".
+        # Try both rating+count combined and standalone patterns.
         if aria_label:
-            m = re.search(r"(\d+\.\d+)\s+star", aria_label, re.IGNORECASE)
+            m = re.search(r"(\d+\.\d+)\s*stars?", aria_label, re.IGNORECASE)
             if m:
                 result["rating"] = float(m.group(1))
-            m = re.search(r"([\d,]+)\s+review", aria_label, re.IGNORECASE)
+            # "1,234 Reviews" / "1.2K reviews" — explicit word
+            m = re.search(
+                r"([\d,.]+\s*[KkMm]?)\s+reviews?", aria_label, re.IGNORECASE
+            )
             if m:
-                result["reviewCount"] = int(m.group(1).replace(",", ""))
+                result["reviewCount"] = _to_count(m.group(1))
+            # "4.5 (1,234)" / "4.5 stars (1,234)" — combined parens form,
+            # tolerating an optional "stars" word between rating and count.
+            if not result["reviewCount"]:
+                m = re.search(
+                    r"\d+\.\d+\s*(?:stars?\s*)?\(([\d,.]+\s*[KkMm]?)\)",
+                    aria_label,
+                    re.IGNORECASE,
+                )
+                if m:
+                    result["reviewCount"] = _to_count(m.group(1))
+
+        # Combined "rating(count)" pattern in raw card text BEFORE splitting,
+        # since Google often renders both on a single line: "4.8(1,234)".
+        # "stars" tolerated optionally between, e.g. "4.5 stars (1,234)".
+        if result["rating"] is None or not result["reviewCount"]:
+            m = re.search(
+                r"(\d+\.\d+)\s*(?:stars?\s*)?\(([\d,.]+\s*[KkMm]?)\)",
+                text,
+                re.IGNORECASE,
+            )
+            if m:
+                if result["rating"] is None:
+                    try:
+                        result["rating"] = float(m.group(1))
+                    except ValueError:
+                        pass
+                if not result["reviewCount"]:
+                    result["reviewCount"] = _to_count(m.group(2))
 
         # Split on newlines and middle-dot separators Google uses in cards
         lines = [
@@ -920,15 +970,11 @@ class GoogleMapsScraper:
                         pass
                 continue
 
-            # Review count: bare integer "(1,234)" or "1,234"
-            if re.match(r"^\(?([\d,]+)\)?$", line):
+            # Review count: bare integer/decimal with optional K/M suffix:
+            # "(1,234)", "1,234", "(1.2K)", "2.5M"
+            if re.match(r"^\(?[\d,.]+\s*[KkMm]?\)?$", line):
                 if not result["reviewCount"]:
-                    try:
-                        result["reviewCount"] = int(
-                            line.strip("()").replace(",", "")
-                        )
-                    except ValueError:
-                        pass
+                    result["reviewCount"] = _to_count(line.strip("()"))
                 continue
 
             # Price level: dollar signs only
