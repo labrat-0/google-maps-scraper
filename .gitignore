@@ -5,7 +5,6 @@ crawlee_storage/
 .actor/.cache/
 
 # Internal knowledge (do not publish)
-.arc/
 .claude/
 
 # Python
